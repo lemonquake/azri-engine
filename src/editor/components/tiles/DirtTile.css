@@ -1,0 +1,25 @@
+/* DirtTile.css */
+@keyframes dirt-pulse {
+
+    0%,
+    100% {
+        opacity: 0.95;
+    }
+
+    50% {
+        opacity: 1;
+    }
+}
+
+.dirt-base {
+    fill: #614022;
+}
+
+.dirt-highlight {
+    fill: #7d522c;
+    animation: dirt-pulse 4s infinite ease-in-out;
+}
+
+.dirt-shadow {
+    fill: #4a301a;
+}

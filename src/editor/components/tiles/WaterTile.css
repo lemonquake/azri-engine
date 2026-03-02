@@ -1,0 +1,56 @@
+/* WaterTile.css */
+@keyframes water-wave {
+    0% {
+        transform: translateX(0);
+    }
+
+    50% {
+        transform: translateX(-4px);
+    }
+
+    100% {
+        transform: translateX(0);
+    }
+}
+
+@keyframes water-surface {
+
+    0%,
+    100% {
+        transform: translateY(0);
+    }
+
+    50% {
+        transform: translateY(-2px);
+    }
+}
+
+@keyframes water-bob {
+
+    0%,
+    100% {
+        opacity: 0.7;
+    }
+
+    50% {
+        opacity: 1;
+    }
+}
+
+.water-base {
+    fill: #1e90ff;
+    animation: water-bob 4s infinite ease-in-out;
+}
+
+.water-highlight {
+    fill: #4faeff;
+    animation: water-surface 3s infinite ease-in-out;
+}
+
+.water-surface-line {
+    stroke: #a1d2ff;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    fill: none;
+    animation: water-wave 4s infinite ease-in-out;
+}

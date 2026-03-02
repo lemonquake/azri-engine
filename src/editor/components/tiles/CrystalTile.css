@@ -1,0 +1,43 @@
+/* CrystalTile.css */
+@keyframes crystal-float {
+
+    0%,
+    100% {
+        transform: translateY(0);
+    }
+
+    50% {
+        transform: translateY(-3px);
+    }
+}
+
+@keyframes crystal-glow {
+
+    0%,
+    100% {
+        filter: drop-shadow(0 0 4px rgba(224, 176, 255, 0.6));
+        opacity: 0.9;
+    }
+
+    50% {
+        filter: drop-shadow(0 0 10px rgba(248, 225, 255, 1));
+        opacity: 1;
+    }
+}
+
+.crystal-base {
+    fill: #d36eff;
+}
+
+.crystal-facet-1 {
+    fill: #e8a6ff;
+}
+
+.crystal-facet-2 {
+    fill: #b32ce6;
+}
+
+.crystal-container {
+    animation: crystal-float 3s infinite ease-in-out, crystal-glow 2s infinite ease-in-out alternate;
+    transform-origin: center;
+}
