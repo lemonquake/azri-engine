@@ -141,7 +141,15 @@ interface EditorState {
     isPlaying: boolean;
     togglePlayMode: () => void;
 
+    // Multiplayer State
+    isMultiplayerHost: boolean;
+    setIsMultiplayerHost: (isHost: boolean) => void;
+    multiplayerHostId: string | null;
+    setMultiplayerHostId: (id: string | null) => void;
+
     // Spawn Tool State
+    spawnPlayerIndex: boolean | 1 | 2 | 3;
+    setSpawnPlayerIndex: (index: boolean | 1 | 2 | 3) => void;
     pendingSpawnPos: { x: number; y: number } | null;
     setPendingSpawnPos: (pos: { x: number; y: number } | null) => void;
     // Clipboard
@@ -224,6 +232,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     levelId: null,
     levelName: 'Untitled',
     setLevelName: (name) => set({ levelName: name }),
+
+    // Play Mode
+    isPlaying: false,
+    togglePlayMode: () => set((state) => ({ isPlaying: !state.isPlaying })),
+
+    // Multiplayer State
+    isMultiplayerHost: false,
+    setIsMultiplayerHost: (isHost) => set({ isMultiplayerHost: isHost }),
+    multiplayerHostId: null,
+    setMultiplayerHostId: (id) => set({ multiplayerHostId: id }),
 
     // Physics
     physicsSettings: DEFAULT_PHYSICS,
@@ -1101,11 +1119,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     showCharacterPicker: false,
     setShowCharacterPicker: (show) => set({ showCharacterPicker: show }),
 
-    // Play Mode
-    isPlaying: false,
-    togglePlayMode: () => set((state) => ({ isPlaying: !state.isPlaying })),
 
     // Spawn Tool State
+    // Spawn Tool State
+    spawnPlayerIndex: true,
+    setSpawnPlayerIndex: (index) => set({ spawnPlayerIndex: index }),
     pendingSpawnPos: null,
     setPendingSpawnPos: (pos) => set({ pendingSpawnPos: pos }),
 

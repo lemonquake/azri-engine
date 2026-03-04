@@ -476,13 +476,14 @@ export function LevelEditorCanvas() {
             }
         } else if (activeTool === 'spawn') {
             pushState();
+            const state = useEditorStore.getState();
             placeCharacter({
                 id: `player_spawn_${Date.now()}`,
                 characterId: 'default',
                 gridX: pos.x,
                 gridY: pos.y,
                 layerId: activeLayerId,
-                overrideProperties: { isPlayer: true }
+                overrideProperties: { isPlayer: state.spawnPlayerIndex }
             });
             setActiveTool('select');
         } else if (activeTool === 'text') {

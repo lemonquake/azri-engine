@@ -6,6 +6,8 @@ import { DefaultCharacter } from './DefaultCharacter';
 import { EnemyRenderer } from './EnemyRenderer';
 import type { CharacterAnimationState } from './DefaultCharacter';
 import characterRepo from '../db/repositories/CharacterRepository';
+import { NetworkManager } from './NetworkManager';
+import type { NetworkMessage } from './NetworkManager';
 
 /** Runtime state for tiles with behaviors */
 interface TileRuntimeState {
@@ -111,6 +113,12 @@ export class GameRunner {
     private physics: PhysicsSystem;
     private player: CharacterAnimationState | null = null;
     private playerTexture: HTMLImageElement | null = null;
+
+    // Remote Players
+    private remotePlayers: Map<string, CharacterAnimationState> = new Map();
+    private networkManager: NetworkManager | null = null;
+    private syncTimer: number = 0;
+
     private camera = { x: 0, y: 0 };
     private keys: Set<string> = new Set();
     private previousKeys: Set<string> = new Set();
@@ -204,6 +212,77 @@ export class GameRunner {
 
         // Initialize Player
         this.initPlayer(state);
+
+        // Initialize Multiplayer (if active)
+        this.initMultiplayer(state);
+    }
+
+    private initMultiplayer(state: any) {
+        if (!state.multiplayerHostId && !state.isMultiplayerHost) return;
+
+        this.networkManager = new NetworkManager(
+            this.handleNetworkMessage.bind(this),
+            () => {
+                // On new connection, host sends the map to joiner
+                if (this.networkManager?.isHost) {
+                    const mapData = useEditorStore.getState();
+                    // In a real app we'd serialize the required map subset
+                    this.networkManager.broadcast('map_sync', {
+                        levelId: mapData.levelId,
+                        levelName: mapData.levelName
+                    });
+                }
+            },
+            (connId) => {
+                this.remotePlayers.delete(connId);
+            }
+        );
+
+        if (state.isMultiplayerHost && state.multiplayerHostId) {
+            this.networkManager.hostGame(state.multiplayerHostId).then(() => {
+                console.log("GameRunner: Hosting multiplayer game at", state.multiplayerHostId);
+            });
+            if (this.player) this.player.playerIndex = 1; // Map host to player 1
+        } else if (state.multiplayerHostId && !state.isMultiplayerHost) {
+            // My ID could be generated, but we just need the host ID to join
+            const myTempId = `client_${Date.now()}`;
+            this.networkManager.joinGame(myTempId, state.multiplayerHostId).then(() => {
+                console.log("GameRunner: Joined multiplayer host", state.multiplayerHostId);
+            });
+            if (this.player) this.player.playerIndex = 2; // Map first joiner to player 2 initially
+        }
+    }
+
+    private handleNetworkMessage(msg: NetworkMessage) {
+        if (msg.type === 'player_state') {
+            const remoteState = msg.data;
+            if (!this.remotePlayers.has(msg.senderId)) {
+                // Initialize new remote player
+                this.remotePlayers.set(msg.senderId, {
+                    ...remoteState,
+                    // Hardcode player index for visuals
+                    playerIndex: this.networkManager?.isHost ? 2 : 1
+                });
+            } else {
+                // Update existing remote player
+                const player = this.remotePlayers.get(msg.senderId)!;
+                player.x = remoteState.x;
+                player.y = remoteState.y;
+                player.velocityX = remoteState.velocityX;
+                player.velocityY = remoteState.velocityY;
+                player.facingRight = remoteState.facingRight;
+                player.state = remoteState.state;
+                player.isGrounded = remoteState.isGrounded;
+                player.playerIndex = remoteState.playerIndex;
+            }
+        } else if (msg.type === 'map_sync' && !this.networkManager?.isHost) {
+            // Received map from host
+            const mapSync = msg.data;
+            console.log("GameRunner: Received map_sync from host:", mapSync.levelName);
+            // In a full implementation, we would load the entire map data 
+            // For now, we rely on the client loading the same map from their local DB 
+            // using the levelId provided by command line args or UI
+        }
     }
 
     private resize() {
@@ -227,7 +306,9 @@ export class GameRunner {
 
     private initPlayer(state: any) {
         // Find player start
-        let playerStart: CharacterInstance | undefined;
+        let player1Start: CharacterInstance | undefined;
+        let player2Start: CharacterInstance | undefined;
+        let player3Start: CharacterInstance | undefined;
 
         this.enemies = [];
         this.enemyProjectiles = [];
@@ -235,8 +316,12 @@ export class GameRunner {
         // Check characters for isPlayer flag
         if (state.characters && typeof state.characters.forEach === 'function') {
             state.characters.forEach((char: CharacterInstance) => {
-                if (char.overrideProperties?.isPlayer) {
-                    playerStart = char;
+                if (char.overrideProperties?.isPlayer === true || char.overrideProperties?.isPlayer === 1) {
+                    player1Start = char;
+                } else if (char.overrideProperties?.isPlayer === 2) {
+                    player2Start = char;
+                } else if (char.overrideProperties?.isPlayer === 3) {
+                    player3Start = char;
                 } else if (char.overrideProperties?.isEnemy) {
                     this.enemies.push({
                         x: char.gridX * this.gridSize,
@@ -265,8 +350,17 @@ export class GameRunner {
             });
         }
 
-        const startX = playerStart ? playerStart.gridX * this.gridSize : 100;
-        const startY = playerStart ? playerStart.gridY * this.gridSize : 100;
+        const startX = player1Start ? player1Start.gridX * this.gridSize : 100;
+        const startY = player1Start ? player1Start.gridY * this.gridSize : 100;
+
+        // Initialize remote players as "NPC" style objects initially if Host
+        // Or wait for network if Client
+        // In local play, they just won't be updated by network. 
+        if (!this.networkManager?.isHost) {
+            // We're a client, the player *we* control is P2 or P3 depending.
+            // For now, simplicity: client assumes they control P2 unless told otherwise.
+            // Fallback logic for client spawn location could just be the Host's position.
+        }
 
         this.player = {
             x: startX,
@@ -305,15 +399,27 @@ export class GameRunner {
         this.emitStats();
 
         // Load Player Texture if custom character
-        if (playerStart) {
-            const charDef = characterRepo.getById(playerStart.characterId);
+        if (player1Start) {
+            const charDef = characterRepo.getById(player1Start.characterId);
             if (charDef && charDef.metadata) {
                 try { } catch (e) { }
             }
         }
 
-        if (!playerStart) {
-            console.warn("No player start found, spawning at default.");
+        if (!player1Start) {
+            console.warn("No player 1 start found, spawning at default.");
+        }
+
+        // Apply fallbacks for non-local spawns (used to render remote bodies)
+        if (!player2Start) player2Start = player1Start;
+        if (!player3Start) player3Start = player1Start;
+
+        // Depending on multiplayer connection, rewrite `this.player` startx to our specific role.
+        if (this.networkManager?.isHost) {
+            if (this.player) this.player.playerIndex = 1;
+        } else if (this.networkManager && !this.networkManager.isHost) {
+            // Currently simplified: first joiner is P2, second is P3. 
+            // Our startX will be snapped soon by the server sync anyway.
         }
     }
 
@@ -333,6 +439,11 @@ export class GameRunner {
         window.removeEventListener('keydown', this.boundHandleKeyDown);
         window.removeEventListener('keyup', this.boundHandleKeyUp);
         window.removeEventListener('resize', this.boundResize);
+
+        if (this.networkManager) {
+            this.networkManager.disconnect();
+            this.networkManager = null;
+        }
     }
 
     private emitStats() {
@@ -1564,6 +1675,35 @@ export class GameRunner {
             if (this.player.y > this.physicsSettings.deathLineY) {
                 this.triggerGameOver();
             }
+        }
+
+        // ─── Multiplayer Sync ───
+        if (this.networkManager) {
+            this.syncTimer += dt;
+            if (this.syncTimer > 0.05) { // Sync ~20 times per second
+                this.syncTimer = 0;
+                this.networkManager.broadcast('player_state', {
+                    x: this.player.x,
+                    y: this.player.y,
+                    velocityX: this.player.velocityX,
+                    velocityY: this.player.velocityY,
+                    facingRight: this.player.facingRight,
+                    state: this.player.state,
+                    isGrounded: this.player.isGrounded,
+                    playerIndex: this.player.playerIndex
+                });
+            }
+
+            // Extrapolate remote players
+            this.remotePlayers.forEach(rp => {
+                rp.x += rp.velocityX * dt;
+                rp.y += rp.velocityY * dt;
+
+                // Advance their animations
+                if (rp.state !== 'idle') {
+                    rp.animationTimer = (rp.animationTimer || 0) + dt;
+                }
+            });
         }
 
         // Update previous keys

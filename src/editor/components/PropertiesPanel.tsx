@@ -1191,22 +1191,24 @@ function InspectorPanel() {
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
                                 <User size={12} className="text-zinc-500" />
-                                <span className="text-[10px] text-zinc-500 uppercase">Is Player Start</span>
+                                <span className="text-[10px] text-zinc-500 uppercase">Spawn Point</span>
                             </div>
-                            <label className="relative inline-flex items-center cursor-pointer">
-                                <input
-                                    type="checkbox"
-                                    className="sr-only peer"
-                                    checked={selectedCharacter.overrideProperties?.isPlayer === true}
-                                    onChange={(e) => updateCharacterInstance(selectedCharacter.id, {
-                                        overrideProperties: {
-                                            ...selectedCharacter.overrideProperties,
-                                            isPlayer: e.target.checked
-                                        }
-                                    })}
-                                />
-                                <div className="w-9 h-5 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
-                            </label>
+                            <select
+                                value={(selectedCharacter.overrideProperties?.isPlayer as number | string) || 'false'}
+                                onChange={(e) => updateCharacterInstance(selectedCharacter.id, {
+                                    overrideProperties: {
+                                        isPlayer: e.target.value === 'false' ? false :
+                                            e.target.value === 'true' ? true :
+                                                (parseInt(e.target.value, 10) as 1 | 2 | 3)
+                                    }
+                                })}
+                                className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-300 focus:outline-none focus:border-emerald-500"
+                            >
+                                <option value="false">None</option>
+                                <option value="true">Player 1 (Host)</option>
+                                <option value="2">Player 2 (Joiner)</option>
+                                <option value="3">Player 3 (Joiner)</option>
+                            </select>
                         </div>
                     </div>
 

@@ -308,7 +308,12 @@ export interface CharacterInstance {
         mana?: number;
         isEnemy?: boolean;
         npcType?: string;
-        isPlayer?: boolean; // If true, this instance is the player start
+        isPlayer?: boolean | 1 | 2 | 3; // If true or 1-3, this instance acts as a player spawn
+
+        // Multiplayer distinct properties
+        maxWallJumps?: number;
+        knockbackImmunity?: boolean;
+        scaleMultiplier?: number;
 
         // Enemy specific properties
         maxHp?: number;

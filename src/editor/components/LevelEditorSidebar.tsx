@@ -75,11 +75,16 @@ export function LevelEditorSidebar() {
         collisionToolMode, setCollisionToolMode,
         smoothShapeType, setSmoothShapeType,
         collisionBrushSize, setCollisionBrushSize,
+        isMultiplayerHost, setIsMultiplayerHost,
+        multiplayerHostId, setMultiplayerHostId,
+        spawnPlayerIndex, setSpawnPlayerIndex
     } = useEditorStore();
 
     const [showSaveModal, setShowSaveModal] = useState(false);
     const [showLoadModal, setShowLoadModal] = useState(false);
     const [showSettingsModal, setShowSettingsModal] = useState(false);
+    const [isJoining, setIsJoining] = useState(false);
+    const [joinInput, setJoinInput] = useState("");
 
     const shapeMode = toolSettings.shapeMode;
 
@@ -266,6 +271,32 @@ export function LevelEditorSidebar() {
                 </div>
             )}
 
+            {/* Player Spawn Tool Options */}
+            {activeTool === 'spawn' && (
+                <div className="px-3 py-2 flex flex-col gap-2 animate-in fade-in slide-in-from-left-4 duration-200">
+                    <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Player Index</span>
+                    <div className="flex gap-1 bg-zinc-800/80 p-1 rounded-lg">
+                        {[
+                            { value: true, label: 'P1 (Host)' },
+                            { value: 2 as const, label: 'P2' },
+                            { value: 3 as const, label: 'P3' },
+                        ].map(({ value, label }) => (
+                            <button
+                                key={label}
+                                onClick={() => setSpawnPlayerIndex(value)}
+                                title={`Player ${label}`}
+                                className={clsx(
+                                    "flex-1 p-1.5 rounded transition-colors text-xs font-bold flex items-center justify-center",
+                                    spawnPlayerIndex === value ? "bg-indigo-500/30 text-indigo-400" : "text-zinc-500 hover:text-zinc-300"
+                                )}
+                            >
+                                {label.split(' ')[0]}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             {/* Symmetry Toggle */}
             <div className="px-3 py-2 flex flex-col gap-2 border-t-4 border-zinc-900 mt-2 bg-black/40">
                 <span className="text-[16px] text-zinc-500 uppercase tracking-wider" style={{ fontFamily: "'VT323', monospace" }}>Symmetry</span>
@@ -335,6 +366,9 @@ export function LevelEditorSidebar() {
                 <button
                     onClick={(e) => {
                         e.currentTarget.blur();
+                        // Standard play mode clears multiplayer network flags
+                        setIsMultiplayerHost(false);
+                        setMultiplayerHostId(null);
                         togglePlayMode();
                     }}
                     className={clsx(
@@ -348,6 +382,90 @@ export function LevelEditorSidebar() {
                     {isPlaying ? <Square size={18} className="fill-current" /> : <Play size={18} className="fill-current" />}
                     {isPlaying ? "STOP" : "PLAY"}
                 </button>
+            </div>
+
+            {/* Multiplayer Controls */}
+            <div className="px-3 py-2 flex flex-col gap-2 bg-black/40">
+                <span className="text-[14px] text-zinc-500 uppercase tracking-wider font-bold">Multiplayer</span>
+
+                {isMultiplayerHost && isPlaying ? (
+                    <div className="flex flex-col gap-1 w-full p-2 border-2 border-indigo-500 bg-zinc-900 shadow-[2px_2px_0px_#000]">
+                        <span className="text-xs text-indigo-400 font-bold uppercase">Your Host ID:</span>
+                        <div className="flex gap-1 items-center">
+                            <span className="text-white font-mono text-xs uppercase bg-black px-1 py-1 flex-1 border border-zinc-700 overflow-hidden text-ellipsis whitespace-nowrap" title={multiplayerHostId || ''}>{multiplayerHostId}</span>
+                            <button
+                                onClick={() => navigator.clipboard.writeText(multiplayerHostId || '')}
+                                className="bg-indigo-600 hover:bg-indigo-500 text-white p-1 text-xs"
+                                title="Copy ID"
+                            >
+                                Copy
+                            </button>
+                        </div>
+                    </div>
+                ) : (
+                    <button
+                        onClick={(e) => {
+                            e.currentTarget.blur();
+                            const newId = `host_${Date.now() % 10000}`;
+                            setIsMultiplayerHost(true);
+                            setMultiplayerHostId(newId);
+                            navigator.clipboard.writeText(newId).catch(() => { });
+                            togglePlayMode();
+                        }}
+                        className="w-full py-2 bg-indigo-600 border-2 border-indigo-400 text-white hover:bg-indigo-500 transition-all shadow-[2px_2px_0px_#000] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none font-bold uppercase text-[14px]"
+                    >
+                        Host Game
+                    </button>
+                )}
+
+                {!isJoining ? (
+                    <button
+                        onClick={() => setIsJoining(true)}
+                        className="w-full py-2 bg-cyan-700 border-2 border-cyan-500 text-white hover:bg-cyan-600 transition-all shadow-[2px_2px_0px_#000] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none font-bold uppercase text-[14px]"
+                    >
+                        Join Game
+                    </button>
+                ) : (
+                    <div className="flex flex-col gap-1 w-full p-2 border-2 border-cyan-500 bg-zinc-900 shadow-[2px_2px_0px_#000]">
+                        <input
+                            type="text"
+                            placeholder="Host ID"
+                            value={joinInput}
+                            onChange={e => setJoinInput(e.target.value)}
+                            onKeyDown={e => {
+                                if (e.key === 'Enter' && joinInput.trim().length > 0) {
+                                    setIsMultiplayerHost(false);
+                                    setMultiplayerHostId(joinInput.trim());
+                                    setIsJoining(false);
+                                    togglePlayMode();
+                                }
+                            }}
+                            className="w-full bg-black border border-zinc-700 p-1 text-white font-mono text-sm uppercase outline-none focus:border-cyan-400"
+                            autoFocus
+                        />
+                        <div className="flex gap-1 mt-1">
+                            <button
+                                onClick={() => {
+                                    if (joinInput.trim().length > 0) {
+                                        setIsMultiplayerHost(false);
+                                        setMultiplayerHostId(joinInput.trim());
+                                        setIsJoining(false);
+                                        togglePlayMode();
+                                    }
+                                }}
+                                className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white text-xs py-1 font-bold"
+                            >
+                                GO
+                            </button>
+                            <button
+                                onClick={() => setIsJoining(false)}
+                                className="flex-1 bg-zinc-700 hover:bg-zinc-600 text-white text-xs py-1 font-bold"
+                            >
+                                X
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* File Operations */}
