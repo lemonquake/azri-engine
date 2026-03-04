@@ -85,7 +85,7 @@ export function MultiplayerLobbyModal() {
     } = useEditorStore();
 
     const [screen, setScreen] = useState<LobbyScreen>('menu');
-    const [levels, setLevels] = useState<Pick<LevelEntity, 'id' | 'name' | 'updated_at'>[]>([]);
+    const [levels, setLevels] = useState<(Pick<LevelEntity, 'id' | 'name' | 'updated_at'> & { isPhysicalFile?: boolean; filePath?: string; rawData?: any })[]>([]);
     const [selectedLevelId, setSelectedLevelId] = useState<string | null>(null);
     const [generatedHostId, setGeneratedHostId] = useState<string>('');
     const [joinInput, setJoinInput] = useState('');
@@ -94,11 +94,128 @@ export function MultiplayerLobbyModal() {
     const joinInputRef = useRef<HTMLInputElement>(null);
 
     // Load saved levels
-    useEffect(() => {
-        const all = levelRepo.getAll();
+    const loadLevels = async (keepSelection = false) => {
+        const dbLevels = levelRepo.getAll();
+        let physicalMaps: any[] = [];
+
+        console.log("Loading levels. electronAPI exists:", !!(window.electronAPI));
+        // @ts-ignore
+        if (window.electronAPI && window.electronAPI.readMaps) {
+            // @ts-ignore
+            physicalMaps = await window.electronAPI.readMaps();
+        } else {
+            // Browser fallback
+            try {
+                // @ts-ignore
+                const mapModules = import.meta.glob('/public/maps/*.json', { query: '?raw', import: 'default' });
+                for (const path in mapModules) {
+                    try {
+                        const content = await mapModules[path]();
+                        const parsed = JSON.parse(content as string);
+                        if (parsed.id && parsed.name) {
+                            physicalMaps.push({
+                                ...parsed,
+                                filePath: path
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Failed to parse public map:', path, e);
+                    }
+                }
+            } catch (e) {
+                console.error('import.meta.glob failed:', e);
+            }
+        }
+
+        const formattedPhysical = physicalMaps.map((m: any) => ({
+            id: m.id,
+            name: m.name,
+            updated_at: m.updated_at || Date.now(),
+            isPhysicalFile: true,
+            filePath: m.filePath,
+            rawData: m
+        }));
+
+        // Remove DB levels that have an identical ID to a physical map
+        const physicalIds = new Set(formattedPhysical.map((m: any) => m.id));
+        const uniqueDbLevels = dbLevels.filter(lvl => !physicalIds.has(lvl.id));
+
+        const all = [...formattedPhysical, ...uniqueDbLevels];
         setLevels(all);
-        if (all.length > 0) setSelectedLevelId(all[0].id);
+        if (all.length > 0 && !keepSelection) setSelectedLevelId(all[0].id);
+    };
+
+    useEffect(() => {
+        loadLevels();
     }, []);
+
+    const handleImportMap = async () => {
+        // @ts-ignore
+        if (window.electronAPI && window.electronAPI.importMap) {
+            try {
+                // @ts-ignore
+                const newMap = await window.electronAPI.importMap();
+                if (newMap) {
+                    await loadLevels(true);
+                    setSelectedLevelId(newMap.id);
+                }
+            } catch (e) {
+                console.error('Failed to import map:', e);
+                alert('Failed to import map. Check console for details.');
+            }
+        } else {
+            // Browser fallback
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json';
+            input.onchange = async (e: any) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = async (event) => {
+                    try {
+                        const content = event.target?.result as string;
+                        const parsed = JSON.parse(content);
+                        if (parsed.id && parsed.name) {
+                            // In browser mode, we save it to IndexedDB since we can't write to public/maps
+                            const { default: repo } = await import('../db/repositories/LevelRepository');
+                            const existing = repo.getById(parsed.id);
+                            const savePayload = {
+                                id: parsed.id || 'imported-' + Date.now(),
+                                name: parsed.name || 'Imported Map',
+                                width: parsed.width || 1000,
+                                height: parsed.height || 1000,
+                                tiles_data: typeof parsed.tiles_data === 'string' ? parsed.tiles_data : JSON.stringify(parsed.tiles_data || []),
+                                characters_data: typeof parsed.characters_data === 'string' ? parsed.characters_data : JSON.stringify(parsed.characters_data || []),
+                                layers_data: typeof parsed.layers_data === 'string' ? parsed.layers_data : JSON.stringify(parsed.layers_data || []),
+                                skybox_data: typeof parsed.skybox_data === 'string' ? parsed.skybox_data : JSON.stringify(parsed.skybox_data || []),
+                                collision_data: typeof parsed.collision_data === 'string' ? parsed.collision_data : JSON.stringify(parsed.collision_data || []),
+                                level_images_data: typeof parsed.level_images_data === 'string' ? parsed.level_images_data : JSON.stringify(parsed.level_images_data || []),
+                                physics_data: typeof parsed.physics_data === 'string' ? parsed.physics_data : JSON.stringify(parsed.physics_data || {}),
+                                tilesheets_data: typeof parsed.tilesheets_data === 'string' ? parsed.tilesheets_data : JSON.stringify(parsed.tilesheets_data || []),
+                                tile_defs_data: typeof parsed.tile_defs_data === 'string' ? parsed.tile_defs_data : JSON.stringify(parsed.tile_defs_data || [])
+                            };
+
+                            if (existing) {
+                                repo.update(parsed.id, savePayload);
+                            } else {
+                                repo.create(savePayload);
+                            }
+                            await loadLevels(true);
+                            setSelectedLevelId(parsed.id);
+                        } else {
+                            throw new Error('Invalid map format');
+                        }
+                    } catch (err) {
+                        console.error(err);
+                        alert("Invalid map file");
+                    }
+                };
+                reader.readAsText(file);
+            };
+            input.click();
+        }
+    };
 
     // Focus join input when screen changes
     useEffect(() => {
@@ -112,19 +229,34 @@ export function MultiplayerLobbyModal() {
 
     // ─── HOST FLOW ───────────────────────────────────────────────────────────
     const handleLoadMap = async (levelId: string) => {
-        const { default: repo } = await import('../db/repositories/LevelRepository');
-        const data = repo.getById(levelId);
+        const targetMap = levels.find(l => l.id === levelId);
+        let data: any;
+
+        if (targetMap?.isPhysicalFile) {
+            data = targetMap.rawData;
+        } else {
+            const { default: repo } = await import('../db/repositories/LevelRepository');
+            data = repo.getById(levelId);
+        }
+
         if (!data) return;
         try {
-            const tiles = JSON.parse(data.tiles_data || '[]');
-            const characters = JSON.parse(data.characters_data || '[]');
-            const layers = JSON.parse(data.layers_data || '[]');
-            const skyboxLayers = JSON.parse(data.skybox_data || '[]');
-            const levelImages = JSON.parse(data.level_images_data || '[]');
-            const physics = JSON.parse(data.physics_data || '{}');
-            const collisionShapes = JSON.parse(data.collision_data || '[]');
-            const importedTilesheets = JSON.parse(data.tilesheets_data || '[]');
-            const availableTiles = JSON.parse(data.tile_defs_data || '[]');
+            const safeParse = (val: any, fallback: any) => {
+                if (!val) return fallback;
+                if (typeof val === 'string') return JSON.parse(val);
+                return val;
+            };
+
+            const tiles = safeParse(data.tiles_data, []);
+            const characters = safeParse(data.characters_data, []);
+            const layers = safeParse(data.layers_data, []);
+            const skyboxLayers = safeParse(data.skybox_data, []);
+            const levelImages = safeParse(data.level_images_data, []);
+            const physics = safeParse(data.physics_data, {});
+            const collisionShapes = safeParse(data.collision_data, []);
+            const importedTilesheets = safeParse(data.tilesheets_data, []);
+            const availableTiles = safeParse(data.tile_defs_data, []);
+
             loadLevel({
                 id: data.id,
                 name: data.name,
@@ -315,7 +447,8 @@ export function MultiplayerLobbyModal() {
                                                     className="text-lg uppercase tracking-wider"
                                                     style={{ fontFamily: "'VT323', monospace" }}
                                                 >
-                                                    {selectedLevelId === lvl.id ? '▶ ' : '  '}{lvl.name}
+                                                    {selectedLevelId === lvl.id ? '▶ ' : '  '}
+                                                    {lvl.name} {lvl.isPhysicalFile && <span className="text-yellow-400 text-sm ml-2">(MAPS FOLDER)</span>}
                                                 </div>
                                                 <div
                                                     className="text-[11px] text-zinc-600"
@@ -334,6 +467,14 @@ export function MultiplayerLobbyModal() {
 
                             <div className="flex gap-3 mt-2">
                                 <button
+                                    onClick={handleImportMap}
+                                    className="flex-1 py-3 border-2 border-yellow-600 text-yellow-500 hover:text-white hover:bg-yellow-600 hover:border-yellow-500 uppercase tracking-widest shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all text-lg"
+                                    style={{ fontFamily: "'VT323', monospace" }}
+                                    title="Import a .json level file to the Maps folder"
+                                >
+                                    📥 IMPORT MAP
+                                </button>
+                                <button
                                     onClick={() => setScreen('menu')}
                                     className="flex-1 py-3 border-2 border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500 uppercase tracking-widest shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all text-lg"
                                     style={{ fontFamily: "'VT323', monospace" }}
@@ -343,7 +484,7 @@ export function MultiplayerLobbyModal() {
                                 <button
                                     onClick={handleStartHosting}
                                     disabled={!selectedLevelId || levels.length === 0}
-                                    className="flex-1 py-3 border-2 border-indigo-500 bg-indigo-600 hover:bg-indigo-500 text-white uppercase tracking-widest shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all disabled:opacity-40 disabled:cursor-not-allowed text-xl"
+                                    className="flex-2 py-3 px-6 border-2 border-indigo-500 bg-indigo-600 hover:bg-indigo-500 text-white uppercase tracking-widest shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all disabled:opacity-40 disabled:cursor-not-allowed text-xl"
                                     style={{ fontFamily: "'VT323', monospace" }}
                                 >
                                     HOST GAME →
@@ -487,18 +628,27 @@ export function MultiplayerLobbyModal() {
                                     >
                                         <option value="">-- Don't load any map --</option>
                                         {levels.map(l => (
-                                            <option key={l.id} value={l.id}>{l.name}</option>
+                                            <option key={l.id} value={l.id}>{l.name} {l.isPhysicalFile ? '(MAPS FOLDER)' : ''}</option>
                                         ))}
                                     </select>
-                                    {selectedLevelId && (
+                                    <div className="flex gap-2 mt-2">
                                         <button
-                                            onClick={() => handleLoadMap(selectedLevelId)}
-                                            className="mt-2 w-full py-2 border-2 border-zinc-600 text-zinc-400 hover:border-zinc-400 hover:text-white text-sm uppercase tracking-wider transition-all"
+                                            onClick={handleImportMap}
+                                            className="px-4 py-2 border-2 border-yellow-600 text-yellow-500 hover:text-white hover:bg-yellow-600 text-sm uppercase tracking-wider transition-all shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none"
                                             style={{ fontFamily: "'VT323', monospace" }}
                                         >
-                                            LOAD MAP INTO EDITOR
+                                            📥 IMPORT MAP
                                         </button>
-                                    )}
+                                        {selectedLevelId && (
+                                            <button
+                                                onClick={() => handleLoadMap(selectedLevelId)}
+                                                className="flex-1 py-2 border-2 border-zinc-600 text-zinc-400 hover:border-zinc-400 hover:text-white text-sm uppercase tracking-wider transition-all shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none"
+                                                style={{ fontFamily: "'VT323', monospace" }}
+                                            >
+                                                LOAD MAP INTO EDITOR
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
                             )}
 

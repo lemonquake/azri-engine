@@ -1,5 +1,7 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import path from 'path';
+import fs from 'fs';
+import { promises as fsPromises } from 'fs';
 import isDev from 'electron-is-dev';
 import { fileURLToPath } from 'url';
 
@@ -31,19 +33,95 @@ function createWindow() {
     }
 }
 
-import { ipcMain } from 'electron';
-
 app.whenReady().then(() => {
-    ipcMain.on('get-user-data-path', (event) => {
-        event.returnValue = app.getPath('userData');
-    });
-
-    ipcMain.on('get-app-path', (event) => {
-        event.returnValue = app.getAppPath();
-    });
-
     ipcMain.on('is-packaged', (event) => {
         event.returnValue = app.isPackaged;
+    });
+
+    const getMapsDir = () => {
+        // Use public/maps inside the project root for dev/prod consistency if requested
+        const isPackaged = app.isPackaged;
+        const projectRoot = isPackaged ? path.join(app.getAppPath(), '..') : app.getAppPath();
+        const mapsDir = path.join(projectRoot, 'public', 'maps');
+
+        if (!fs.existsSync(mapsDir)) {
+            fs.mkdirSync(mapsDir, { recursive: true });
+        }
+        return mapsDir;
+    };
+
+    ipcMain.handle('read-maps', async () => {
+        try {
+            const mapsDir = getMapsDir();
+            const files = await fsPromises.readdir(mapsDir);
+            const maps = [];
+
+            for (const file of files) {
+                if (file.endsWith('.json')) {
+                    const filePath = path.join(mapsDir, file);
+                    const content = await fsPromises.readFile(filePath, 'utf-8');
+                    try {
+                        const parsed = JSON.parse(content);
+                        if (parsed.id && parsed.name) {
+                            maps.push({
+                                ...parsed,
+                                isPhysicalFile: true,
+                                filePath
+                            });
+                        }
+                    } catch (err) {
+                        console.error(`Error parsing map file ${file}:`, err);
+                    }
+                }
+            }
+            return maps;
+        } catch (error) {
+            console.error('Failed to read maps directory:', error);
+            return [];
+        }
+    });
+
+    ipcMain.handle('import-map', async (event) => {
+        try {
+            const focusedWindow = BrowserWindow.getFocusedWindow();
+            const result = await dialog.showOpenDialog(focusedWindow, {
+                title: 'Import Map',
+                filters: [{ name: 'JSON Levels', extensions: ['json'] }],
+                properties: ['openFile']
+            });
+
+            if (result.canceled || result.filePaths.length === 0) {
+                return null;
+            }
+
+            const sourcePath = result.filePaths[0];
+            const content = await fsPromises.readFile(sourcePath, 'utf-8');
+
+            // Validate it's a map
+            let parsed;
+            try {
+                parsed = JSON.parse(content);
+            } catch (err) {
+                throw new Error('Invalid JSON file');
+            }
+
+            if (!parsed.id || !parsed.name) {
+                throw new Error('JSON file is not a valid map format (missing id or name)');
+            }
+
+            const mapsDir = getMapsDir();
+            const destPath = path.join(mapsDir, path.basename(sourcePath));
+
+            await fsPromises.copyFile(sourcePath, destPath);
+            return {
+                ...parsed,
+                isPhysicalFile: true,
+                filePath: destPath
+            };
+        } catch (error) {
+            console.error('Failed to import map:', error);
+            throw error;
+        }
     });
 
     createWindow();

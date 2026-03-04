@@ -13,6 +13,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+console.log("Preload script loaded, injecting electronAPI");
 contextBridge.exposeInMainWorld('electronAPI', {
-    isPackaged: () => ipcRenderer.sendSync('is-packaged')
+    isPackaged: () => ipcRenderer.sendSync('is-packaged'),
+    readMaps: () => ipcRenderer.invoke('read-maps'),
+    importMap: () => ipcRenderer.invoke('import-map')
 });
