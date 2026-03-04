@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { clsx } from 'clsx';
 import { PanelRight, Settings, Play, Square, Grid3X3, Users, ChevronDown } from 'lucide-react';
 import { PropertiesPanel, LevelEditorSidebar, CharacterSelectionModal } from '../components';
+import { MultiplayerLobbyModal } from '../components/MultiplayerLobbyModal';
 import { CharacterMasterPanel } from '../characterMaster';
 import { useEditorStore } from '../state/editorStore';
 import { GameCanvas } from '../game/GameCanvas';
@@ -25,7 +26,7 @@ export function MainLayout({ children }: MainLayoutProps) {
 
     const currentMode = modes.find(m => m.id === editorMode)!;
 
-    const { showCharacterPicker, setShowCharacterPicker, isPlaying, togglePlayMode } = useEditorStore();
+    const { showCharacterPicker, setShowCharacterPicker, showMultiplayerLobby, isPlaying, togglePlayMode } = useEditorStore();
 
     useEffect(() => {
         const handleSwitchView = (e: CustomEvent) => {
@@ -182,6 +183,9 @@ export function MainLayout({ children }: MainLayoutProps) {
             {/* Modals */}
             {showCharacterPicker && (
                 <CharacterSelectionModal onClose={() => setShowCharacterPicker(false)} />
+            )}
+            {showMultiplayerLobby && (
+                <MultiplayerLobbyModal />
             )}
         </div>
     );

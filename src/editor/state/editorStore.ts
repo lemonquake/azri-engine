@@ -136,6 +136,8 @@ interface EditorState {
     // UI State
     showCharacterPicker: boolean;
     setShowCharacterPicker: (show: boolean) => void;
+    showMultiplayerLobby: boolean;
+    setShowMultiplayerLobby: (show: boolean) => void;
 
     // Play Mode
     isPlaying: boolean;
@@ -1118,7 +1120,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // UI State
     showCharacterPicker: false,
     setShowCharacterPicker: (show) => set({ showCharacterPicker: show }),
-
+    showMultiplayerLobby: false,
+    setShowMultiplayerLobby: (show) => set({ showMultiplayerLobby: show }),
 
     // Spawn Tool State
     // Spawn Tool State

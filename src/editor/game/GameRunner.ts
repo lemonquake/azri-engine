@@ -5,7 +5,6 @@ import { DEFAULT_LAYER_ID, DEFAULT_TILES } from '../types';
 import { DefaultCharacter } from './DefaultCharacter';
 import { EnemyRenderer } from './EnemyRenderer';
 import type { CharacterAnimationState } from './DefaultCharacter';
-import characterRepo from '../db/repositories/CharacterRepository';
 import { NetworkManager } from './NetworkManager';
 import type { NetworkMessage } from './NetworkManager';
 
@@ -210,11 +209,11 @@ export class GameRunner {
         window.addEventListener('keydown', this.boundHandleKeyDown);
         window.addEventListener('keyup', this.boundHandleKeyUp);
 
-        // Initialize Player
-        this.initPlayer(state);
-
-        // Initialize Multiplayer (if active)
+        // Initialize Multiplayer FIRST so role is known before initPlayer
         this.initMultiplayer(state);
+
+        // Initialize Player (role is now known via this.networkManager)
+        this.initPlayer(state);
     }
 
     private initMultiplayer(state: any) {
@@ -350,23 +349,35 @@ export class GameRunner {
             });
         }
 
-        const startX = player1Start ? player1Start.gridX * this.gridSize : 100;
-        const startY = player1Start ? player1Start.gridY * this.gridSize : 100;
+        // Apply fallbacks for spawn points
+        if (!player2Start) player2Start = player1Start;
+        if (!player3Start) player3Start = player1Start;
 
-        // Initialize remote players as "NPC" style objects initially if Host
-        // Or wait for network if Client
-        // In local play, they just won't be updated by network. 
-        if (!this.networkManager?.isHost) {
-            // We're a client, the player *we* control is P2 or P3 depending.
-            // For now, simplicity: client assumes they control P2 unless told otherwise.
-            // Fallback logic for client spawn location could just be the Host's position.
+        // Determine OUR spawn based on role
+        let mySpawn: CharacterInstance | undefined;
+        let myPlayerIndex = 1;
+        if (this.networkManager && !this.networkManager.isHost) {
+            // Joiner: default to P2 spawn
+            mySpawn = player2Start;
+            myPlayerIndex = 2;
+        } else {
+            // Host or singleplayer: P1 spawn
+            mySpawn = player1Start;
+            myPlayerIndex = 1;
+        }
+
+        const startX = mySpawn ? mySpawn.gridX * this.gridSize : 100;
+        const startY = mySpawn ? mySpawn.gridY * this.gridSize : 100;
+
+        if (!player1Start) {
+            console.warn("No player 1 start found, spawning at default.");
         }
 
         this.player = {
             x: startX,
             y: startY,
-            width: 20, // Slimmer than grid
-            height: 28, // Slightly shorter than grid
+            width: 20,
+            height: 28,
             velocityX: 0,
             velocityY: 0,
             isGrounded: false,
@@ -378,6 +389,7 @@ export class GameRunner {
             exp: 0,
             maxExp: 100,
             level: 1,
+            playerIndex: myPlayerIndex,
             // Gameplay Mechanics
             jumpCount: 0,
             maxJumps: 2,
@@ -397,30 +409,6 @@ export class GameRunner {
 
         // Notify initial stats
         this.emitStats();
-
-        // Load Player Texture if custom character
-        if (player1Start) {
-            const charDef = characterRepo.getById(player1Start.characterId);
-            if (charDef && charDef.metadata) {
-                try { } catch (e) { }
-            }
-        }
-
-        if (!player1Start) {
-            console.warn("No player 1 start found, spawning at default.");
-        }
-
-        // Apply fallbacks for non-local spawns (used to render remote bodies)
-        if (!player2Start) player2Start = player1Start;
-        if (!player3Start) player3Start = player1Start;
-
-        // Depending on multiplayer connection, rewrite `this.player` startx to our specific role.
-        if (this.networkManager?.isHost) {
-            if (this.player) this.player.playerIndex = 1;
-        } else if (this.networkManager && !this.networkManager.isHost) {
-            // Currently simplified: first joiner is P2, second is P3. 
-            // Our startX will be snapped soon by the server sync anyway.
-        }
     }
 
     public start() {

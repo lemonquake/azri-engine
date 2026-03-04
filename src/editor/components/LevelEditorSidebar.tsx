@@ -75,16 +75,17 @@ export function LevelEditorSidebar() {
         collisionToolMode, setCollisionToolMode,
         smoothShapeType, setSmoothShapeType,
         collisionBrushSize, setCollisionBrushSize,
-        isMultiplayerHost, setIsMultiplayerHost,
-        multiplayerHostId, setMultiplayerHostId,
-        spawnPlayerIndex, setSpawnPlayerIndex
+        isMultiplayerHost,
+        multiplayerHostId,
+        setIsMultiplayerHost,
+        setMultiplayerHostId,
+        spawnPlayerIndex, setSpawnPlayerIndex,
+        setShowMultiplayerLobby,
     } = useEditorStore();
 
     const [showSaveModal, setShowSaveModal] = useState(false);
     const [showLoadModal, setShowLoadModal] = useState(false);
     const [showSettingsModal, setShowSettingsModal] = useState(false);
-    const [isJoining, setIsJoining] = useState(false);
-    const [joinInput, setJoinInput] = useState("");
 
     const shapeMode = toolSettings.shapeMode;
 
@@ -386,86 +387,27 @@ export function LevelEditorSidebar() {
 
             {/* Multiplayer Controls */}
             <div className="px-3 py-2 flex flex-col gap-2 bg-black/40">
-                <span className="text-[14px] text-zinc-500 uppercase tracking-wider font-bold">Multiplayer</span>
+                <span className="text-[14px] text-zinc-500 uppercase tracking-wider font-bold" style={{ fontFamily: "'VT323', monospace" }}>Multiplayer</span>
 
-                {isMultiplayerHost && isPlaying ? (
-                    <div className="flex flex-col gap-1 w-full p-2 border-2 border-indigo-500 bg-zinc-900 shadow-[2px_2px_0px_#000]">
-                        <span className="text-xs text-indigo-400 font-bold uppercase">Your Host ID:</span>
-                        <div className="flex gap-1 items-center">
-                            <span className="text-white font-mono text-xs uppercase bg-black px-1 py-1 flex-1 border border-zinc-700 overflow-hidden text-ellipsis whitespace-nowrap" title={multiplayerHostId || ''}>{multiplayerHostId}</span>
-                            <button
-                                onClick={() => navigator.clipboard.writeText(multiplayerHostId || '')}
-                                className="bg-indigo-600 hover:bg-indigo-500 text-white p-1 text-xs"
-                                title="Copy ID"
-                            >
-                                Copy
-                            </button>
-                        </div>
-                    </div>
-                ) : (
-                    <button
-                        onClick={(e) => {
-                            e.currentTarget.blur();
-                            const newId = `host_${Date.now() % 10000}`;
-                            setIsMultiplayerHost(true);
-                            setMultiplayerHostId(newId);
-                            navigator.clipboard.writeText(newId).catch(() => { });
-                            togglePlayMode();
-                        }}
-                        className="w-full py-2 bg-indigo-600 border-2 border-indigo-400 text-white hover:bg-indigo-500 transition-all shadow-[2px_2px_0px_#000] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none font-bold uppercase text-[14px]"
-                    >
-                        Host Game
-                    </button>
-                )}
-
-                {!isJoining ? (
-                    <button
-                        onClick={() => setIsJoining(true)}
-                        className="w-full py-2 bg-cyan-700 border-2 border-cyan-500 text-white hover:bg-cyan-600 transition-all shadow-[2px_2px_0px_#000] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none font-bold uppercase text-[14px]"
-                    >
-                        Join Game
-                    </button>
-                ) : (
-                    <div className="flex flex-col gap-1 w-full p-2 border-2 border-cyan-500 bg-zinc-900 shadow-[2px_2px_0px_#000]">
-                        <input
-                            type="text"
-                            placeholder="Host ID"
-                            value={joinInput}
-                            onChange={e => setJoinInput(e.target.value)}
-                            onKeyDown={e => {
-                                if (e.key === 'Enter' && joinInput.trim().length > 0) {
-                                    setIsMultiplayerHost(false);
-                                    setMultiplayerHostId(joinInput.trim());
-                                    setIsJoining(false);
-                                    togglePlayMode();
-                                }
-                            }}
-                            className="w-full bg-black border border-zinc-700 p-1 text-white font-mono text-sm uppercase outline-none focus:border-cyan-400"
-                            autoFocus
-                        />
-                        <div className="flex gap-1 mt-1">
-                            <button
-                                onClick={() => {
-                                    if (joinInput.trim().length > 0) {
-                                        setIsMultiplayerHost(false);
-                                        setMultiplayerHostId(joinInput.trim());
-                                        setIsJoining(false);
-                                        togglePlayMode();
-                                    }
-                                }}
-                                className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white text-xs py-1 font-bold"
-                            >
-                                GO
-                            </button>
-                            <button
-                                onClick={() => setIsJoining(false)}
-                                className="flex-1 bg-zinc-700 hover:bg-zinc-600 text-white text-xs py-1 font-bold"
-                            >
-                                X
-                            </button>
-                        </div>
+                {/* Show status badge if in multiplayer session */}
+                {isMultiplayerHost && isPlaying && multiplayerHostId && (
+                    <div className="flex items-center gap-1 px-2 py-1 border border-indigo-500/60 bg-indigo-950/40 text-indigo-400 text-xs" style={{ fontFamily: "'VT323', monospace" }}>
+                        🟢 HOSTING: <span className="font-mono ml-1 truncate" title={multiplayerHostId}>{multiplayerHostId}</span>
                     </div>
                 )}
+                {!isMultiplayerHost && isPlaying && multiplayerHostId && (
+                    <div className="flex items-center gap-1 px-2 py-1 border border-cyan-500/60 bg-cyan-950/40 text-cyan-400 text-xs" style={{ fontFamily: "'VT323', monospace" }}>
+                        🟢 JOINED: <span className="font-mono ml-1 truncate" title={multiplayerHostId}>{multiplayerHostId}</span>
+                    </div>
+                )}
+
+                <button
+                    onClick={() => setShowMultiplayerLobby(true)}
+                    className="w-full py-3 bg-indigo-700 border-2 border-indigo-500 text-white hover:bg-indigo-600 transition-all shadow-[2px_2px_0px_#000] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none font-bold uppercase tracking-widest text-[16px] flex items-center justify-center gap-2"
+                    style={{ fontFamily: "'VT323', monospace" }}
+                >
+                    ⚔ LOBBY
+                </button>
             </div>
 
             {/* File Operations */}
