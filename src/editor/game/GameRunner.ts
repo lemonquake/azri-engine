@@ -343,8 +343,8 @@ export class GameRunner {
                 exp: this.player.exp,
                 maxExp: this.player.maxExp,
                 level: this.player.level,
-                wallJumps: 3 - (this.player.wallJumpCount || 0),
-                maxWallJumps: 3,
+                wallJumps: 4 - (this.player.wallJumpCount || 0),
+                maxWallJumps: 4,
                 wallFriction: this.player.wallFriction || 0
             });
         }
@@ -657,9 +657,13 @@ export class GameRunner {
         }
 
         const canAttack = this.player.state !== 'hit' &&
-            (!isAttacking || (isAttacking && this.player.animationTimer > 0.2 && (this.player.attackCooldown || 0) <= 0));
+            (!isAttacking || (isAttacking && this.player.animationTimer > 0.2 && (this.player.attackCooldown || 0) <= 0)) &&
+            (this.player.isGrounded || (this.player.airAttackCount || 0) < 3);
 
         if (canAttack && isJustPressed('q')) {
+            if (!this.player.isGrounded) {
+                this.player.airAttackCount = (this.player.airAttackCount || 0) + 1;
+            }
             let prefix = 'attack_base_';
             if (this.keys.has('w') || this.keys.has('arrowup')) {
                 prefix = 'attack_up_';
@@ -897,6 +901,7 @@ export class GameRunner {
         // Reset jump count when grounded
         if (this.player.isGrounded) {
             this.player.jumpCount = 0;
+            this.player.airAttackCount = 0; // Reset air attacks
             if (this.player.wallJumpCount !== 0) {
                 this.player.wallJumpCount = 0;
                 this.emitStats();
@@ -982,8 +987,8 @@ export class GameRunner {
                 this.player.scaleX = 0.8;
                 this.player.scaleY = 1.3;
                 this.spawnDust(this.player.x + this.player.width / 2, this.player.y + this.player.height, 5, '#e5e7eb');
-            } else if (this.player.isOnWall && (this.player.wallJumpCount || 0) < 3) {
-                // Wall Jump (Max 3)
+            } else if (this.player.isOnWall && (this.player.wallJumpCount || 0) < 4) {
+                // Wall Jump (Max 4)
                 this.player.velocityY = jumpVelocity * 0.9;
                 // Kick off the wall
                 this.player.velocityX = -(this.player.wallDirection || 1) * moveSpeed * 1.5;
@@ -1010,7 +1015,7 @@ export class GameRunner {
                         size: 3 + Math.random() * 3
                     });
                 }
-            } else if (this.player.isOnWall && (this.player.wallJumpCount || 0) >= 3) {
+            } else if (this.player.isOnWall && (this.player.wallJumpCount || 0) >= 4) {
                 this.player.exhaustedWallJumpTimer = 0.5;
             } else if ((this.player.jumpCount || 0) < (this.player.maxJumps || 2)) {
                 // Double/Multi Jump
@@ -1167,7 +1172,24 @@ export class GameRunner {
             if (!steppedUp) {
                 // Wall is too tall, stop horizontal movement
                 collider.y = originalY; // Reset collider for future checks if needed
-                this.player.x -= this.player.velocityX * dt;
+
+                // ─── Precise Horizontal Binary Search ───
+                const preCollisionX = this.player.x - this.player.velocityX * dt;
+                let loX = preCollisionX;
+                let hiX = this.player.x;
+                for (let step = 0; step < 10; step++) {
+                    const midX = (loX + hiX) / 2;
+                    collider.x = midX;
+                    const collides = this.physics.checkCollision(collider, tileRects) ||
+                        this.physics.checkCollisionShapes(collider, this.collisionShapes);
+                    if (collides) {
+                        hiX = midX; // still colliding, search backward
+                    } else {
+                        loX = midX; // no collision, search deeper
+                    }
+                }
+                this.player.x = loX;
+                collider.x = this.player.x; // Restore collider state
 
                 // Wall Climb/Slide Logic
                 if (!this.player.isGrounded && !shouldCrouch && !this.player.isOverheated) {
@@ -1386,6 +1408,67 @@ export class GameRunner {
             } else {
                 // Hit ceiling
                 this.player.velocityY = 0;
+            }
+        }
+        // --- Apply Freefall State ---
+        if (!this.player.isGrounded &&
+            !this.player.isOnWall &&
+            !this.player.isDashing &&
+            this.player.velocityY > 300 &&
+            !this.player.state.startsWith('attack') &&
+            this.player.state !== 'hit') {
+            this.player.state = 'freefall';
+        }
+
+        // ─── Pop-off Unstuck Mechanic ───
+        // If after all movement resolution the player is still inside something (e.g. crushed), pop them out
+        collider.x = this.player.x;
+        collider.y = this.player.y;
+        if (this.physics.checkCollision(collider, tileRects) || this.physics.checkCollisionShapes(collider, this.collisionShapes)) {
+            let poppedOut = false;
+            // Check increasing distances to find a safe spot
+            for (let r = 2; r <= 32; r += 4) {
+                const offsets = [
+                    { dx: 0, dy: -r }, // Top (prioritize popping up)
+                    { dx: r, dy: 0 },  // Right
+                    { dx: -r, dy: 0 }, // Left
+                    { dx: 0, dy: r },  // Bottom
+                    // Diagonals
+                    { dx: r, dy: -r }, { dx: -r, dy: -r },
+                    { dx: r, dy: r }, { dx: -r, dy: r }
+                ];
+                for (const offset of offsets) {
+                    collider.x = this.player.x + offset.dx;
+                    collider.y = this.player.y + offset.dy;
+                    if (!this.physics.checkCollision(collider, tileRects) && !this.physics.checkCollisionShapes(collider, this.collisionShapes)) {
+                        this.player.x = collider.x;
+                        this.player.y = collider.y;
+                        poppedOut = true;
+
+                        // Spawn pop-off visual effects
+                        this.spawnDust(this.player.x + this.player.width / 2, this.player.y + this.player.height / 2, 8, '#f87171');
+                        for (let i = 0; i < 6; i++) {
+                            this.spawnParticle({
+                                x: this.player.x + this.player.width / 2,
+                                y: this.player.y + this.player.height / 2,
+                                vx: (Math.random() - 0.5) * 150,
+                                vy: (Math.random() - 0.5) * 150,
+                                life: 0.2 + Math.random() * 0.2,
+                                color: '#ffffff',
+                                size: 3
+                            });
+                        }
+                        // Visual bump
+                        this.screenShakeTimer = 0.1;
+                        this.screenShakeIntensity = 3;
+                        break;
+                    }
+                }
+                if (poppedOut) break;
+            }
+            if (!poppedOut) {
+                // Absolute fallback if severely crushed
+                this.player.y -= 40;
             }
         }
 

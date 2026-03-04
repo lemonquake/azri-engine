@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { clsx } from 'clsx';
-import { Heart } from 'lucide-react';
 
 interface PlayerHUDProps {
     hp: number;
@@ -13,8 +12,7 @@ interface PlayerHUDProps {
     wallFriction?: number;
 }
 
-export function PlayerHUD({ hp, maxHp, exp, maxExp, level, wallJumps = 3, maxWallJumps = 3, wallFriction = 0 }: PlayerHUDProps) {
-    // Local state for animations (e.g., shake on damage)
+export function PlayerHUD({ hp, maxHp, exp, maxExp, level, wallJumps = 4, maxWallJumps = 4, wallFriction = 0 }: PlayerHUDProps) {
     const [isDamaged, setIsDamaged] = useState(false);
     const [prevHp, setPrevHp] = useState(hp);
 
@@ -31,102 +29,101 @@ export function PlayerHUD({ hp, maxHp, exp, maxExp, level, wallJumps = 3, maxWal
     const expPercent = Math.min(100, Math.max(0, (exp / maxExp) * 100));
 
     return (
-        <div className="absolute bottom-4 left-4 flex flex-col gap-2 w-64 select-none pointer-events-none">
-            {/* Level Badge & HP Container */}
-            <div className={clsx("relative transition-transform duration-100", isDamaged && "translate-x-1 translate-y-1")}>
+        <div className="absolute bottom-6 left-6 flex flex-col gap-3 w-80 select-none pointer-events-none" style={{ fontFamily: "'Press Start 2P', monospace" }}>
+            <style>{`
+                @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+                @keyframes intense-vibrate {
+                    0%, 100% { transform: translate(0, 0); }
+                    25% { transform: translate(-2px, 1px); }
+                    50% { transform: translate(2px, -1px); }
+                    75% { transform: translate(-2px, -1px); }
+                }
+                .animate-intense-vibrate {
+                    animation: intense-vibrate 0.1s infinite;
+                }
+                @keyframes intense-flash {
+                    0%, 100% { border-color: #ef4444; box-shadow: 0 0 10px 2px rgba(239,68,68,0.8); }
+                    50% { border-color: #ff0000; box-shadow: 0 0 20px 8px rgba(255,0,0,1); }
+                }
+                .animate-intense-flash {
+                    animation: intense-flash 0.15s infinite;
+                }
+                .retro-text-shadow {
+                    text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 0 2px 0 #000, 2px 0 0 #000, 0 -2px 0 #000, -2px 0 0 #000;
+                }
+            `}</style>
 
-                {/* HP BAR */}
-                <div className="relative h-6 bg-slate-900/80 rounded-lg overflow-hidden border border-slate-700 shadow-lg backdrop-blur-sm">
-                    {/* Background Pattern */}
-                    <div className="absolute inset-0 opacity-20 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjQiPgo8cmVjdCB3aWR0aD0iNCIgaGVpZ2h0PSI0IiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9IjAuMSIvPgo8L3N2Zz4=')]"></div>
+            <div className={clsx("relative transition-transform duration-100", isDamaged && "translate-x-2 translate-y-2")}>
+
+                {/* Level Frame */}
+                <div className="absolute -top-6 -left-6 w-16 h-16 bg-slate-900 border-4 border-slate-600 flex flex-col items-center justify-center shadow-2xl z-20 skew-x-[-10deg]">
+                    <span className="text-white text-xl retro-text-shadow text-amber-400 skew-x-[10deg]">{level}</span>
+                    <div className="text-[8px] text-slate-400 mt-1 skew-x-[10deg]">LVL</div>
+                </div>
+
+                {/* HP BAR Background wrapper - thicker and pixel-art styled */}
+                <div className="ml-8 relative h-10 bg-slate-900 border-4 border-slate-600 shadow-2xl skew-x-[-10deg] overflow-hidden">
 
                     {/* Fill */}
                     <div
-                        className="absolute top-0 left-0 h-full bg-gradient-to-r from-emerald-600 via-green-500 to-emerald-400 transition-all duration-300 ease-out"
+                        className="absolute top-0 left-0 h-full transition-all duration-300 ease-out flex flex-col"
                         style={{ width: `${hpPercent}%` }}
                     >
-                        {/* Glow / Shine */}
-                        <div className="absolute top-0 right-0 w-8 h-full bg-white/30 skew-x-[-20deg] blur-sm"></div>
-                        <div className="absolute bottom-0 left-0 w-full h-1/2 bg-white/10"></div>
+                        {/* Retro gradient blocky look */}
+                        <div className="h-1/3 w-full bg-emerald-400"></div>
+                        <div className="h-1/3 w-full bg-emerald-500"></div>
+                        <div className="h-1/3 w-full bg-emerald-600"></div>
+                        <div className="absolute inset-0 shadow-[inset_0_0_10px_rgba(0,255,0,0.5)]"></div>
                     </div>
 
                     {/* Text Overlay */}
-                    <div className="absolute inset-0 flex items-center justify-between px-2 text-xs font-bold text-white drop-shadow-md">
-                        <div className="flex items-center gap-1">
-                            <Heart size={12} className={clsx("text-red-400", isDamaged && "animate-pulse")} fill="currentColor" />
-                            <span>HP</span>
+                    <div className="absolute inset-0 flex items-center justify-between px-4 text-white retro-text-shadow skew-x-[10deg]">
+                        <div className="flex items-center gap-2">
+                            <span className={clsx("text-red-500 text-[10px]", isDamaged && "animate-pulse")}>HP</span>
                         </div>
-                        <span>{Math.ceil(hp)} / {maxHp}</span>
+                        <span className="text-sm tracking-widest">{Math.ceil(hp)}/{maxHp}</span>
                     </div>
                 </div>
 
-                {/* EXP BAR */}
-                <div className="mt-1 relative h-2 bg-slate-900/80 rounded-full overflow-hidden border border-slate-700/50 shadow-md">
+                {/* JUMP BAR - 4 distinct segments */}
+                <div className="ml-8 mt-2 flex gap-1.5 h-4 skew-x-[-10deg]">
+                    {Array.from({ length: maxWallJumps }).map((_, i) => (
+                        <div
+                            key={i}
+                            className={clsx(
+                                "flex-1 border-[3px] transition-colors duration-200",
+                                i < wallJumps
+                                    ? "bg-cyan-400 border-cyan-100 shadow-[0_0_8px_rgba(34,211,238,0.8)]"
+                                    : "bg-slate-800 border-slate-900 opacity-60"
+                            )}
+                        />
+                    ))}
+                </div>
+
+                {/* EXP BAR (thin line under jump) */}
+                <div className="ml-8 mt-2 relative h-2 bg-slate-900 border-2 border-slate-700 skew-x-[-10deg]">
                     <div
-                        className="absolute top-0 left-0 h-full bg-gradient-to-r from-yellow-600 via-amber-500 to-yellow-300 transition-all duration-500 ease-out"
+                        className="absolute top-0 left-0 h-full bg-amber-400 transition-all duration-500 ease-out shadow-[0_0_5px_rgba(251,191,36,0.5)]"
                         style={{ width: `${expPercent}%` }}
-                    >
-                        <div className="absolute top-0 right-0 w-2 h-full bg-white/50 blur-[1px]"></div>
-                    </div>
-                </div>
-
-                {/* WALL JUMP BAR */}
-                <style>{`
-                    @keyframes intense-vibrate {
-                        0%, 100% { transform: translate(0, 0); }
-                        25% { transform: translate(-2px, 1px); }
-                        50% { transform: translate(2px, -1px); }
-                        75% { transform: translate(-2px, -1px); }
-                    }
-                    .animate-intense-vibrate {
-                        animation: intense-vibrate 0.1s infinite;
-                    }
-                    @keyframes intense-flash {
-                        0%, 100% { background-color: #ef4444; box-shadow: 0 0 10px 2px rgba(239,68,68,0.8); }
-                        50% { background-color: #ff0000; box-shadow: 0 0 20px 8px rgba(255,0,0,1); }
-                    }
-                    .animate-intense-flash {
-                        animation: intense-flash 0.15s infinite;
-                    }
-                `}</style>
-                <div className={clsx(
-                    "mt-1 relative h-1.5 rounded-full overflow-hidden shadow-md",
-                    wallJumps <= 0
-                        ? "bg-red-900 border border-red-500 animate-intense-vibrate animate-intense-flash"
-                        : "bg-slate-900/80 border border-slate-700/50"
-                )}>
-                    <div
-                        className={clsx(
-                            "absolute top-0 left-0 h-full transition-all duration-300 ease-out",
-                            wallJumps <= 0 ? "bg-red-500 animate-pulse" : "bg-gradient-to-r from-emerald-500 to-green-400"
-                        )}
-                        style={{ width: `${Math.max(0, Math.min(100, (wallJumps / maxWallJumps) * 100))}%` }}
                     ></div>
                 </div>
 
                 {/* WALL FRICTION BURN METER */}
                 <div
                     className={clsx(
-                        "mt-1 relative h-1 rounded-full overflow-hidden shadow-md transition-all duration-300",
+                        "ml-8 mt-1 relative h-2 border-2 skew-x-[-10deg] transition-all duration-300",
                         wallFriction > 0 ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-4",
-                        wallFriction >= 100 ? "animate-intense-vibrate animate-intense-flash" : "border border-amber-900/50 bg-slate-900/80"
+                        wallFriction >= 100 ? "animate-intense-vibrate animate-intense-flash" : "border-slate-800 bg-slate-900"
                     )}
                 >
                     <div
                         className={clsx(
                             "absolute top-0 left-0 h-full transition-all duration-100 ease-linear",
-                            wallFriction >= 100 ? "bg-red-500" : "bg-gradient-to-r from-yellow-500 via-orange-500 to-red-500"
+                            wallFriction >= 100 ? "bg-red-500" : "bg-orange-500"
                         )}
                         style={{ width: `${Math.max(0, Math.min(100, wallFriction))}%` }}
                     ></div>
                 </div>
-
-                {/* Level Circle */}
-                <div className="absolute -top-3 -left-3 w-10 h-10 bg-gradient-to-br from-indigo-600 to-indigo-800 rounded-full border-2 border-indigo-400 flex items-center justify-center shadow-xl z-10">
-                    <span className="text-white font-bold text-sm drop-shadow-sm">{level}</span>
-                    <div className="absolute bottom-0 text-[8px] text-indigo-200 font-mono uppercase tracking-widest translate-y-[8px]">LVL</div>
-                </div>
-
             </div>
         </div>
     );
