@@ -23,6 +23,7 @@ export interface CharacterAnimationState {
     dead?: boolean;
     // Multiplayer
     playerIndex?: number;
+    username?: string;
     // Gameplay Polish Mechanics
     airAttackCount?: number;
     jumpCount?: number;
@@ -106,6 +107,42 @@ export class DefaultCharacter {
         if (char.isDashing) {
             visualScaleX *= 1.4;
             visualScaleY *= 0.6;
+        }
+
+        // --- Render Player Nameplate ---
+        if (char.username) {
+            ctx.save();
+            ctx.translate(0, -char.height / 2 - 25);
+
+            // Nameplate text
+            const nameText = char.username.toUpperCase();
+
+            ctx.font = '10px "VT323", monospace, "Press Start 2P", sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            const textWidth = ctx.measureText(nameText).width;
+            const padX = 4;
+            const padY = 2;
+
+            // Background badge
+            ctx.fillStyle = 'rgba(0,0,0,0.6)';
+            ctx.beginPath();
+            ctx.roundRect(-textWidth / 2 - padX, -5 - padY, textWidth + padX * 2, 10 + padY * 2, 2);
+            ctx.fill();
+
+            // Text stroke/shadow for readability
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#000';
+            ctx.strokeText(nameText, 0, 0);
+
+            // Player Color logic for nametag
+            ctx.fillStyle = char.playerIndex === 2 ? '#a855f7' : char.playerIndex === 3 ? '#fbbf24' : '#818cf8';
+            if (char.isEnemy) ctx.fillStyle = '#ef4444';
+
+            ctx.fillText(nameText, 0, 0);
+
+            ctx.restore();
         }
 
         // Apply visual squash/stretch

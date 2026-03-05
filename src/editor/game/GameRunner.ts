@@ -598,6 +598,25 @@ export class GameRunner {
     private update(dt: number) {
         if (!this.player || this.isGameOver) return;
 
+        // --- Network Sync ---
+        if (this.networkManager) {
+            this.syncTimer -= dt;
+            if (this.syncTimer <= 0) {
+                this.networkManager.broadcast('player_state', {
+                    x: this.player.x,
+                    y: this.player.y,
+                    velocityX: this.player.velocityX,
+                    velocityY: this.player.velocityY,
+                    facingRight: this.player.facingRight,
+                    state: this.player.state,
+                    isGrounded: this.player.isGrounded,
+                    playerIndex: this.player.playerIndex,
+                    username: this.player.username
+                });
+                this.syncTimer = 1 / 20; // 20 tick rate
+            }
+        }
+
         if (this.player.exhaustedWallJumpTimer && this.player.exhaustedWallJumpTimer > 0) {
             this.player.exhaustedWallJumpTimer -= dt;
         }

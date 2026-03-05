@@ -149,6 +149,10 @@ interface EditorState {
     multiplayerHostId: string | null;
     setMultiplayerHostId: (id: string | null) => void;
 
+    // Dedicated Server State
+    isDedicatedServer: boolean;
+    setIsDedicatedServer: (isDedicated: boolean) => void;
+
     // Spawn Tool State
     spawnPlayerIndex: boolean | 1 | 2 | 3;
     setSpawnPlayerIndex: (index: boolean | 1 | 2 | 3) => void;
@@ -244,6 +248,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     setIsMultiplayerHost: (isHost) => set({ isMultiplayerHost: isHost }),
     multiplayerHostId: null,
     setMultiplayerHostId: (id) => set({ multiplayerHostId: id }),
+
+    // Dedicated Server State
+    isDedicatedServer: false,
+    setIsDedicatedServer: (isDedicated) => set({ isDedicatedServer: isDedicated }),
 
     // Physics
     physicsSettings: DEFAULT_PHYSICS,

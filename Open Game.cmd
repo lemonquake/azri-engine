@@ -1,16 +1,14 @@
 @echo off
 title Azri Engine
 echo ============================================================
-echo   AZRI ENGINE — LEVEL EDITOR
+echo   AZRI ENGINE — LEVEL EDITOR ^& GAME
 echo ============================================================
 echo.
-echo  Starting the editor...
+echo  Starting the engine...
 echo  Open your browser to:  http://localhost:5173
 echo.
-echo  CONTROLS:
-echo   - Use the editor to build your level
-echo   - Press PLAY to test your level in singleplayer
-echo   - Use the LOBBY button for multiplayer
+echo  For MULTIPLAYER instructions (Hosting/Joining),
+echo  please read the MULTIPLAYER_GUIDE.md file.
 echo.
 echo ============================================================
 echo.

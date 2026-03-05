@@ -1,7 +1,7 @@
 import Peer from 'peerjs';
 import type { DataConnection } from 'peerjs';
 
-export type MultiplayerDataType = 'map_sync' | 'player_state' | 'player_action';
+export type MultiplayerDataType = 'map_sync' | 'player_state' | 'player_action' | 'chat_message' | 'ping' | 'pong';
 
 export interface NetworkMessage {
     type: MultiplayerDataType;
@@ -66,29 +66,49 @@ export class NetworkManager {
             // Client player index will be assigned by host later via a welcome message, but default to 1 for now
             this.myPlayerIndex = 1;
 
-            this.peer = new Peer(myId);
+            const connectWithRetry = (retries: number, delayMs: number) => {
+                // Destroy previous peer instance if it exists from a failed attempt
+                if (this.peer) {
+                    try { this.peer.destroy(); } catch (e) { }
+                    this.peer = null;
+                }
 
-            this.peer.on('open', (id) => {
-                console.log('Client created with ID:', id);
-                const conn = this.peer!.connect(hostId, { reliable: true });
+                // Suffix to ensure fresh ID on retry if needed
+                const attemptId = retries < 5 ? myId : `${myId}_r${5 - retries}`;
+                this.peer = new Peer(attemptId);
 
-                conn.on('open', () => {
-                    console.log('Connected to Host!');
-                    this.setupConnection(conn);
-                    this.connections.set(conn.peer, conn);
-                    resolve(id);
+                this.peer.on('open', (id) => {
+                    console.log(`[Join] Client created with ID: ${id}. Attempting to connect to Host: ${hostId}`);
+                    const conn = this.peer!.connect(hostId, { reliable: true });
+
+                    conn.on('open', () => {
+                        console.log('[Join] Connected to Host!');
+                        this.setupConnection(conn);
+                        this.connections.set(conn.peer, conn);
+                        resolve(id);
+                    });
+
+                    conn.on('error', (err) => {
+                        console.error('[Join] Connection Error:', err);
+                        // If it's a connection-level error, we might not want to retry the whole peer creation, 
+                        // but for simplicity and robustness we'll let the peer error handler or timeout catch failures.
+                    });
                 });
 
-                conn.on('error', (err) => {
-                    console.error('Connection Error:', err);
-                    reject(err);
-                });
-            });
+                this.peer.on('error', (err: any) => {
+                    console.error('[Join] PeerJS Client Error:', err);
 
-            this.peer.on('error', (err) => {
-                console.error('PeerJS Client Error:', err);
-                reject(err);
-            });
+                    if (err.type === 'peer-unavailable' && retries > 0) {
+                        console.log(`[Join] Host unavailable, retrying in ${delayMs}ms... (${retries} retries left)`);
+                        setTimeout(() => connectWithRetry(retries - 1, delayMs), delayMs);
+                    } else {
+                        reject(err);
+                    }
+                });
+            };
+
+            // Start with 10 retries, 500ms apart (total 5 seconds wait time for host to be ready)
+            connectWithRetry(10, 500);
         });
     }
 
