@@ -149,8 +149,8 @@ function peerServerPlugin() {
 
       server.httpServer.once('listening', () => {
         try {
-          const peerServer = PeerServer({ port: 9000, path: '/' })
-          console.log('\n[PeerServer] Running local signaling server on port 9000')
+          const peerServer = PeerServer({ port: 9000, path: '/peerjs' })
+          console.log('\n[PeerServer] Running local signaling server on port 9000 (proxied via Vite at /peerjs)')
 
           peerServer.on('connection', (client: any) => {
             console.log(`[PeerServer] Client connected: ${client.getId()}`)
@@ -171,7 +171,18 @@ function peerServerPlugin() {
 export default defineConfig({
   base: './',
   server: {
-    host: true // Expose server to the local network
+    host: true, // Expose server to the local network
+    proxy: {
+      // Proxy /peerjs to the local PeerServer running on port 9000.
+      // This means clients can reach the signaling server on the same
+      // host:port they loaded the page from (5173), so no direct
+      // access to port 9000 is needed across the LAN.
+      '/peerjs': {
+        target: 'http://localhost:9000',
+        ws: true,
+        changeOrigin: true,
+      }
+    }
   },
   plugins: [react(), tailwindcss(), peerServerPlugin()],
 })

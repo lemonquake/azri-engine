@@ -1,11 +1,12 @@
 import type { PeerJSOption } from 'peerjs';
 
 export const PEER_CONFIG: PeerJSOption = {
-    // Connect to our local PeerServer running on the Host's machine via Vite (port 9000).
-    // Using window.location.hostname dynamically binds to the host's LAN IP or localhost.
+    // Connect to the PeerServer via the Vite dev server proxy at /peerjs.
+    // This uses the same host and port the page was loaded from (e.g. 192.168.x.x:5173),
+    // so it works across the LAN without needing direct access to port 9000.
     host: typeof window !== 'undefined' ? window.location.hostname : 'localhost',
-    port: 9000,
-    path: '/',
+    port: typeof window !== 'undefined' ? Number(window.location.port) || 5173 : 5173,
+    path: '/peerjs',
 
     // Explicit public STUN servers for WebRTC NAT traversal.
     config: {
@@ -17,6 +18,5 @@ export const PEER_CONFIG: PeerJSOption = {
             { urls: 'stun:stun4.l.google.com:19302' },
         ]
     },
-    // Optional: add debug mode to help trace connection issues in console
     debug: 2,
 };
