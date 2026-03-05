@@ -584,7 +584,13 @@ export function MultiplayerLobbyModal() {
 
         if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
         destroyLobbyPeer();
-        const peer = new Peer(PEER_CONFIG);
+        const joinConfig = { ...PEER_CONFIG };
+        // If the user typed an IP or something that looks like an IP, use it. Otherwise, fallback to the local host.
+        // For LAN play with local PeerServer, the join input MUST be the IP.
+        const targetHost = hostId.includes('.') ? hostId : (typeof window !== 'undefined' ? window.location.hostname : 'localhost');
+        joinConfig.host = targetHost;
+
+        const peer = new Peer(joinConfig);
         lobbyPeerRef.current = peer;
 
         joinTimeoutRef.current = setTimeout(() => {
@@ -596,8 +602,20 @@ export function MultiplayerLobbyModal() {
         }, 30000);
 
         peer.on('open', () => {
-            const lobbyHostId = LOBBY_PREFIX + hostId;
-            const conn = peer.connect(lobbyHostId, { reliable: true });
+            // Since we're connecting to their specific PeerServer, the Host ID is predictable.
+            // On the host machine, they registered with `LOBBY_PREFIX + hostId`.
+            // Wait, what is `hostId` here? It's literally what the user typed in the Join box.
+            // Let's assume the user typed "192.168.1.5::azri123", we must split it.
+            let connectIp = targetHost;
+            let connectLobbyId = LOBBY_PREFIX + hostId;
+            if (hostId.includes('::')) {
+                const parts = hostId.split('::');
+                connectIp = parts[0];
+                connectLobbyId = LOBBY_PREFIX + parts[1];
+                joinConfig.host = connectIp;
+            }
+
+            const conn = peer.connect(connectLobbyId, { reliable: true });
 
             conn.on('open', () => {
                 if (joinTimeoutRef.current) { clearTimeout(joinTimeoutRef.current); joinTimeoutRef.current = null; }
@@ -769,24 +787,29 @@ export function MultiplayerLobbyModal() {
                                     </div>
 
                                     {activeTab === 'host' && generatedHostId && (
-                                        <div className="flex items-center gap-3 bg-zinc-900 border border-zinc-800 rounded-xl p-2 pr-4 shadow-sm">
-                                            <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-zinc-950 border border-zinc-800/50 text-zinc-400">
-                                                <Hash size={18} />
+                                        <div className="flex flex-col gap-2">
+                                            <div className="flex items-center gap-3 bg-zinc-900 border border-zinc-800 rounded-xl p-2 pr-4 shadow-sm">
+                                                <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-zinc-950 border border-zinc-800/50 text-zinc-400">
+                                                    <Hash size={18} />
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="text-[10px] text-zinc-500 font-semibold uppercase">Invite Code</span>
+                                                    <span className="font-mono text-zinc-100 text-sm tracking-widest">{generatedHostId}</span>
+                                                </div>
+                                                <button
+                                                    onClick={handleCopyId}
+                                                    className={clsx(
+                                                        "ml-2 p-2 rounded-lg transition-all",
+                                                        copied ? "bg-emerald-500/10 text-emerald-400" : "bg-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-700"
+                                                    )}
+                                                    title="Copy Code"
+                                                >
+                                                    {copied ? <Check size={16} /> : <Copy size={16} />}
+                                                </button>
                                             </div>
-                                            <div className="flex flex-col">
-                                                <span className="text-[10px] text-zinc-500 font-semibold uppercase">Invite Code</span>
-                                                <span className="font-mono text-zinc-100 text-sm tracking-widest">{generatedHostId}</span>
+                                            <div className="text-xs text-zinc-500 px-1 border-l-2 border-indigo-500/50 ml-1 pl-2">
+                                                To play on LAN, Joiners must point their browser to <strong className="text-zinc-300">your laptop's IP address:5173</strong>.
                                             </div>
-                                            <button
-                                                onClick={handleCopyId}
-                                                className={clsx(
-                                                    "ml-2 p-2 rounded-lg transition-all",
-                                                    copied ? "bg-emerald-500/10 text-emerald-400" : "bg-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-700"
-                                                )}
-                                                title="Copy Code"
-                                            >
-                                                {copied ? <Check size={16} /> : <Copy size={16} />}
-                                            </button>
                                         </div>
                                     )}
                                 </div>

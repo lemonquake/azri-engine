@@ -76,11 +76,26 @@ export class NetworkManager {
 
                 // Suffix to ensure fresh ID on retry if needed
                 const attemptId = retries < 5 ? myId : `${myId}_r${5 - retries}`;
-                this.peer = new Peer(attemptId, PEER_CONFIG);
+
+                const joinConfig = { ...PEER_CONFIG };
+                let connectIp = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+                let connectHostId = hostId;
+
+                if (hostId.includes('::')) {
+                    const parts = hostId.split('::');
+                    connectIp = parts[0];
+                    connectHostId = parts[1];
+                    joinConfig.host = connectIp;
+                } else if (hostId.includes('.')) {
+                    // Try treating the entire string as an IP if they didn't include ::
+                    joinConfig.host = hostId;
+                }
+
+                this.peer = new Peer(attemptId, joinConfig);
 
                 this.peer.on('open', (id) => {
-                    console.log(`[Join] Client created with ID: ${id}. Attempting to connect to Host: ${hostId}`);
-                    const conn = this.peer!.connect(hostId, { reliable: true });
+                    console.log(`[Join] Client created with ID: ${id}. Attempting to connect to Host: ${connectHostId}`);
+                    const conn = this.peer!.connect(connectHostId, { reliable: true });
 
                     conn.on('open', () => {
                         console.log('[Join] Connected to Host!');

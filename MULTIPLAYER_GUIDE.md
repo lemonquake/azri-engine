@@ -23,14 +23,14 @@ As a host, your job is to load the map and open your game to other players. Foll
 
 ### 🤝 How to Join
 
-As a joiner, you connect directly to a host using their Host ID.
+As a joiner, you connect directly to a host using their IP and Host ID.
 
-1. **Get the ID:** Ask the host for their active **Host ID**.
+1. **Get the Info:** Ask the host for their active **Invite Code (Host ID)** and their **LAN IP Address**.
 2. **Start the Engine:** Run `Open Game.cmd` and open `http://localhost:5173`.
 3. **Load the Map:** Ensure you have the exact same level/map loaded in your editor as the host.
 4. **Open the Lobby:** Click the **[LOBBY]** button in the left sidebar.
 5. **Join the Game:** Click on **"JOIN A GAME"**.
-6. **Enter ID:** Enter the **Host ID** provided by the host into the input field.
+6. **Enter ID:** Enter the ID in the format `IP_ADDRESS::HOST_ID`. (e.g. `192.168.1.5::azri123`). If you are playing locally on the same PC, just enter the `HOST_ID`.
 7. **Connect:** Click **"JOIN GAME"** and wait for the connection to establish and for the host to start the game.
 
 ## ⚙️ Proper Network Setup
