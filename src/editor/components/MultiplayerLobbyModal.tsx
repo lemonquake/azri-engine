@@ -55,6 +55,12 @@ type BrokerMsg =
     | { type: 'LIST_REQUEST' }
     | { type: 'SESSION_LIST'; sessions: SessionInfo[] };
 
+// Add LANSESSION to support the combined list
+interface LAN_SessionInfo extends SessionInfo {
+    isLan?: boolean;
+    ip?: string;
+}
+
 type LobbyMsg =
     | { type: 'HELLO'; username: string }
     | { type: 'WELCOME'; players: LobbyPlayer[]; yourSlot: number }
@@ -214,7 +220,7 @@ export function MultiplayerLobbyModal() {
     const [copied, setCopied] = useState(false);
 
     // ── Join-specific (browse)
-    const [sessions, setSessions] = useState<SessionInfo[]>([]);
+    const [sessions, setSessions] = useState<LAN_SessionInfo[]>([]);
     const [sessionsFetching, setSessionsFetching] = useState(false);
     // unused: const [showManualId, setShowManualId] = useState(false);
     const [joinInput, setJoinInput] = useState('');
@@ -498,11 +504,75 @@ export function MultiplayerLobbyModal() {
 
         setHostScreen('waiting');
         navigator.clipboard.writeText(newId).catch(() => { });
+
+        // Announce our presence to the Local Area Network using the new API
+        try {
+            fetch('/api/lan/broadcast', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'start',
+                    session: {
+                        hostId: newId,
+                        mapName,
+                        hostName: myUsername,
+                        playerCount: 1,
+                        maxPlayers: 3
+                    }
+                })
+            }).catch(console.error);
+        } catch (e) {
+            console.error('Failed to notify LAN of host status', e);
+        }
     };
+
+    // ── LAN polling interval
+    useEffect(() => {
+        if (activeTab !== 'join') return;
+
+        let isMounted = true;
+        const fetchLanHosts = async () => {
+            try {
+                const res = await fetch('/api/lan/hosts');
+                const data = await res.json();
+                if (isMounted && data.hosts) {
+                    // Prepend [LAN] badge to name or somehow handle them!
+                    // We'll merge them into the session list state later, just tagging them for now.
+                    const lanSessions = data.hosts.map((h: any) => ({ ...h, isLan: true }));
+
+                    setSessions(prev => {
+                        // Merge logic: keep all non-LAN broker sessions, and add the LAN sessions
+                        const existingBrokerSessions = prev.filter(p => !p.isLan);
+                        // Also, remove duplicates if a host is both LAN and Broker
+                        const lanIds = new Set(lanSessions.map((l: any) => l.hostId));
+                        const filteredBroker = existingBrokerSessions.filter(p => !lanIds.has(p.hostId));
+                        return [...lanSessions, ...filteredBroker];
+                    });
+                }
+            } catch (err) {
+            }
+        };
+
+        // Poll every 2 seconds for LAN changes
+        fetchLanHosts();
+        const interval = setInterval(fetchLanHosts, 2000);
+
+        return () => {
+            isMounted = false;
+            clearInterval(interval);
+        };
+    }, [activeTab]);
 
     useEffect(() => {
         if (activeTab === 'join') {
-            connectToBroker((list) => setSessions(list));
+            connectToBroker((list) => {
+                setSessions(prev => {
+                    const lanSessions = prev.filter(p => p.isLan);
+                    const listIds = new Set(lanSessions.map(l => l.hostId));
+                    const uniqueNewList = list.filter(l => !listIds.has(l.hostId));
+                    return [...lanSessions, ...uniqueNewList];
+                });
+            });
         }
     }, [activeTab]);
 
@@ -587,7 +657,17 @@ export function MultiplayerLobbyModal() {
         const joinConfig = { ...PEER_CONFIG };
         // If the user typed an IP or something that looks like an IP, use it. Otherwise, fallback to the local host.
         // For LAN play with local PeerServer, the join input MUST be the IP.
-        const targetHost = hostId.includes('.') ? hostId : (typeof window !== 'undefined' ? window.location.hostname : 'localhost');
+
+        let targetHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+
+        // Check if this is a LAN session from our list first
+        const lanSession = sessions.find(s => s.hostId === hostId && s.isLan);
+        if (lanSession && lanSession.ip) {
+            targetHost = lanSession.ip;
+        } else if (hostId.includes('.')) {
+            targetHost = hostId;
+        }
+
         joinConfig.host = targetHost;
 
         const peer = new Peer(joinConfig);
@@ -669,8 +749,19 @@ export function MultiplayerLobbyModal() {
         }, 5000);
     }, []);
 
+    const stopLANBroadcast = (id: string) => {
+        try {
+            fetch('/api/lan/broadcast', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'stop', hostId: id })
+            }).catch(e => console.error('Failed to stop LAN broadcast', e));
+        } catch (err) { }
+    };
+
     const handleStartGame = () => {
         unregisterSession(generatedHostId);
+        stopLANBroadcast(generatedHostId);
         broadcastLobby({ type: 'START_GAME' });
         destroyLobbyPeer();
         if (!isPlaying) togglePlayMode();
@@ -684,6 +775,9 @@ export function MultiplayerLobbyModal() {
     };
 
     const handleClose = () => {
+        if (activeTab === 'host' && generatedHostId) {
+            stopLANBroadcast(generatedHostId);
+        }
         destroyLobbyPeer();
         setShowMultiplayerLobby(false);
     };
@@ -1029,7 +1123,14 @@ export function MultiplayerLobbyModal() {
                                                                             <Users size={18} />
                                                                         </div>
                                                                         <div>
-                                                                            <div className="font-semibold text-zinc-200 group-hover:text-cyan-300 transition-colors">{s.hostName}'s Game</div>
+                                                                            <div className="font-semibold text-zinc-200 group-hover:text-cyan-300 transition-colors flex items-center gap-2">
+                                                                                {s.hostName}'s Game
+                                                                                {s.isLan && (
+                                                                                    <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-widest bg-emerald-500/20 text-emerald-400 rounded border border-emerald-500/30">
+                                                                                        LAN
+                                                                                    </span>
+                                                                                )}
+                                                                            </div>
                                                                             <div className="text-xs text-zinc-500 font-medium mt-1 flex items-center gap-3">
                                                                                 <span className="flex items-center gap-1"><Globe size={12} /> {s.mapName}</span>
                                                                                 <span className={clsx("flex items-center gap-1", s.playerCount >= s.maxPlayers ? "text-amber-500" : "text-emerald-500")}>

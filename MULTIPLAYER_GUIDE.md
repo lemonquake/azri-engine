@@ -40,6 +40,9 @@ Because Azri Engine uses P2P connectivity, network configuration is important.
 ### Local Network (LAN)
 If all players are on the same local network (e.g., connected to the same Wi-Fi router), you shouldn't need any additional setup. Hosting and joining should work automatically out of the box.
 
+**New Feature: Auto-Discovery**
+Host games on the same network will now automatically broadcast their presence. When you go to the **JOIN A GAME** tab, any game hosted on your Wi-Fi will appear in the "Available Servers" list with a `LAN` badge. You can simply click **JOIN** without needing to type the Host ID or IP address!
+
 ### Over the Internet (WAN)
 If you are playing with friends over the internet, the PeerJS networking connection must be able to establish a link.
 
