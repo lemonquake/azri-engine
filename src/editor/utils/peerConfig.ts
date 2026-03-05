@@ -6,7 +6,10 @@ export const PEER_CONFIG: PeerJSOption = {
     // so it works across the LAN without needing direct access to port 9000.
     host: typeof window !== 'undefined' ? window.location.hostname : 'localhost',
     port: typeof window !== 'undefined' ? Number(window.location.port) || 5173 : 5173,
-    path: '/peerjs',
+    // PeerJS auto-appends 'peerjs/' to this path when building endpoint URLs.
+    // So path '/' → '/peerjs/id', which the Vite proxy forwards correctly to PeerServer.
+    // Do NOT set this to '/peerjs' — that would produce a double prefix '/peerjs/peerjs/id'.
+    path: '/',
 
     // Explicit public STUN servers for WebRTC NAT traversal.
     config: {
