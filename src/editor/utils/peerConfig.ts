@@ -1,8 +1,13 @@
 import type { PeerJSOption } from 'peerjs';
 
 export const PEER_CONFIG: PeerJSOption = {
-    // We add explicit public STUN servers to greatly improve NAT-traversal
-    // over congested LANs and restrictive Windows Firewalls.
+    // Connect to our local PeerServer running on the Host's machine via Vite (port 9000).
+    // Using window.location.hostname dynamically binds to the host's LAN IP or localhost.
+    host: typeof window !== 'undefined' ? window.location.hostname : 'localhost',
+    port: 9000,
+    path: '/',
+
+    // Explicit public STUN servers for WebRTC NAT traversal.
     config: {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
