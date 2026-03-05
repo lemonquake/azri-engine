@@ -1,5 +1,6 @@
 import Peer from 'peerjs';
 import type { DataConnection } from 'peerjs';
+import { PEER_CONFIG } from '../utils/peerConfig';
 
 export type MultiplayerDataType = 'map_sync' | 'player_state' | 'player_action' | 'chat_message' | 'ping' | 'pong';
 
@@ -33,7 +34,7 @@ export class NetworkManager {
         return new Promise((resolve, reject) => {
             this.isHost = true;
             this.myPlayerIndex = 0; // Host is always Player 1
-            this.peer = new Peer(hostId);
+            this.peer = new Peer(hostId, PEER_CONFIG);
 
             this.peer.on('open', (id) => {
                 console.log('Host created with ID:', id);
@@ -75,7 +76,7 @@ export class NetworkManager {
 
                 // Suffix to ensure fresh ID on retry if needed
                 const attemptId = retries < 5 ? myId : `${myId}_r${5 - retries}`;
-                this.peer = new Peer(attemptId);
+                this.peer = new Peer(attemptId, PEER_CONFIG);
 
                 this.peer.on('open', (id) => {
                     console.log(`[Join] Client created with ID: ${id}. Attempting to connect to Host: ${hostId}`);

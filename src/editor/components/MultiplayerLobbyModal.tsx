@@ -8,6 +8,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Peer from 'peerjs';
 import type { DataConnection } from 'peerjs';
+import { PEER_CONFIG } from '../utils/peerConfig';
 import { clsx } from 'clsx';
 import { useEditorStore } from '../state/editorStore';
 import levelRepo from '../db/repositories/LevelRepository';
@@ -239,7 +240,7 @@ export function MultiplayerLobbyModal() {
     const [lobbyError, setLobbyError] = useState<string | null>(null);
 
     // ── Broker peer (session discovery)
-    const BROKER_ID = 'azri_lobby_broker_v1';
+    const BROKER_ID = 'azri_lobby_broker_v2';
     const brokerPeerRef = useRef<Peer | null>(null);
     const brokerConnRef = useRef<DataConnection | null>(null);
     const brokerRegPeerRef = useRef<Peer | null>(null);
@@ -378,7 +379,7 @@ export function MultiplayerLobbyModal() {
     }, []);
 
     const becomeBroker = useCallback(() => {
-        const bp = new Peer(BROKER_ID);
+        const bp = new Peer(BROKER_ID, PEER_CONFIG);
         brokerPeerRef.current = bp;
         bp.on('connection', (conn) => {
             conn.on('open', () => {
@@ -404,7 +405,7 @@ export function MultiplayerLobbyModal() {
         setSessionsFetching(true);
         if (brokerConnRef.current) { try { brokerConnRef.current.close(); } catch { } brokerConnRef.current = null; }
 
-        const tempPeer = new Peer();
+        const tempPeer = new Peer(PEER_CONFIG);
         tempPeer.on('open', () => {
             const conn = tempPeer.connect(BROKER_ID, { reliable: true });
             brokerConnRef.current = conn;
@@ -423,7 +424,7 @@ export function MultiplayerLobbyModal() {
             if ((err as any).type === 'unavailable-id') {
                 try { tempPeer.destroy(); } catch { }
                 setSessionsFetching(false);
-                const retryPeer = new Peer();
+                const retryPeer = new Peer(PEER_CONFIG);
                 retryPeer.on('open', () => {
                     const conn = retryPeer.connect(BROKER_ID, { reliable: true });
                     brokerConnRef.current = conn;
@@ -447,7 +448,7 @@ export function MultiplayerLobbyModal() {
     const registerSession = useCallback((session: SessionInfo) => {
         if (brokerPeerRef.current) { brokerSessionsRef.current.set(session.hostId, session); brokerBroadcastList(); return; }
         if (brokerRegPeerRef.current) { try { brokerRegPeerRef.current.destroy(); } catch { } brokerRegPeerRef.current = null; }
-        const peer = new Peer();
+        const peer = new Peer(PEER_CONFIG);
         brokerRegPeerRef.current = peer;
         peer.on('open', () => {
             const conn = peer.connect(BROKER_ID, { reliable: true });
@@ -510,7 +511,7 @@ export function MultiplayerLobbyModal() {
 
         setLobbyError(null);
         const lobbyId = LOBBY_PREFIX + generatedHostId;
-        const peer = new Peer(lobbyId);
+        const peer = new Peer(lobbyId, PEER_CONFIG);
         lobbyPeerRef.current = peer;
 
         peer.on('open', () => { registerSession({ hostId: generatedHostId, mapName: selectedLevelName, hostName: myUsername, playerCount: 1, maxPlayers: 3 }); });
@@ -583,16 +584,16 @@ export function MultiplayerLobbyModal() {
 
         if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
         destroyLobbyPeer();
-        const peer = new Peer();
+        const peer = new Peer(PEER_CONFIG);
         lobbyPeerRef.current = peer;
 
         joinTimeoutRef.current = setTimeout(() => {
             if (lobbyPeerRef.current === peer) {
-                setLobbyError(`Connection timed out. Host may be offline.`);
+                setLobbyError(`Connection timed out (30s). Please check your VPN/Firewall or ensure the Host is still online.`);
                 destroyLobbyPeer();
                 setJoinScreen('browse');
             }
-        }, 8000);
+        }, 30000);
 
         peer.on('open', () => {
             const lobbyHostId = LOBBY_PREFIX + hostId;
