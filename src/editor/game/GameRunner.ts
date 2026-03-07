@@ -7,6 +7,7 @@ import { EnemyRenderer } from './EnemyRenderer';
 import type { CharacterAnimationState } from './DefaultCharacter';
 import { NetworkManager } from './NetworkManager';
 import type { NetworkMessage } from './NetworkManager';
+import { TileSpriteCache } from '../components/tiles/TileSpriteCache';
 
 /** Runtime state for tiles with behaviors */
 interface TileRuntimeState {
@@ -160,6 +161,9 @@ export class GameRunner {
     private cachedTileRects: import('./PhysicsSystem').TileWorldRect[] = [];
     private dynamicTiles: { tile: Tile, rt: TileRuntimeState, tr: import('./PhysicsSystem').TileWorldRect, baseX: number, baseY: number }[] = [];
     private cachedRectsByLayer: Map<string, import('./PhysicsSystem').TileWorldRect[]> = new Map();
+
+    // Pre-computed water surface lookup: "layerId:gridX,gridY" keys for tiles that have water ABOVE them
+    private waterOccupied: Set<string> = new Set();
 
     // Visual Effects
     private particles: Particle[] = [];
@@ -530,6 +534,14 @@ export class GameRunner {
             }
             this.cachedRectsByLayer.get(tile.layerId)!.push(tr);
 
+        }
+
+        // Build water surface lookup: record which cells have water
+        this.waterOccupied.clear();
+        for (const tile of this.tiles) {
+            if (tile.spriteId === 'water') {
+                this.waterOccupied.add(`${tile.layerId}:${tile.gridX},${tile.gridY}`);
+            }
         }
 
         // Init runtime states for behavior tiles
@@ -2302,12 +2314,30 @@ export class GameRunner {
 
             // 1. Draw Tiles for this layer
             const layerRects = rectsByLayer.get(layer.id) || [];
+            const SVG_TILE_SET = new Set(['grass', 'water', 'lava', 'crystal']);
+            const currentTime = performance.now() / 1000;
             for (const tr of layerRects) {
                 const { tile, x, y } = tr;
-                if (['grass', 'water', 'lava', 'crystal'].includes(tile.spriteId)) continue; // Skip rendering SVG tiles via canvas
 
                 // [OPTIMIZATION] Viewport Culling
                 if (x + tr.width < cullMinX || x > cullMaxX || y + tr.height < cullMinY || y > cullMaxY) {
+                    continue;
+                }
+
+                // ─── SVG Tiles: render via pre-cached canvas bitmaps ───
+                if (SVG_TILE_SET.has(tile.spriteId)) {
+                    const isSurface = tile.spriteId === 'water'
+                        ? !this.waterOccupied.has(`${tile.layerId}:${tile.gridX},${tile.gridY - 1}`)
+                        : undefined;
+                    TileSpriteCache.drawSvgTile(this.ctx, x, y, this.gridSize, tile.spriteId, currentTime, {
+                        isSurface,
+                        opacity: tile.opacity,
+                        rotation: tile.rotation,
+                        scaleX: tile.scaleX,
+                        scaleY: tile.scaleY,
+                        glowColor: tile.glowColor,
+                        glow: tile.glow,
+                    });
                     continue;
                 }
 

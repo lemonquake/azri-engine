@@ -16,12 +16,9 @@ import characterRepo from '../db/repositories/CharacterRepository';
 import type { CharacterEntity } from '../db/repositories/CharacterRepository';
 import { EditorContextMenu } from './EditorContextMenu';
 import { EnemyConfigModal } from './EnemyConfigModal';
-import { GrassTile } from './tiles/GrassTile';
-import { WaterTile } from './tiles/WaterTile';
-import { LavaTile } from './tiles/LavaTile';
-import { CrystalTile } from './tiles/CrystalTile';
+import { TileSpriteCache } from './tiles/TileSpriteCache';
 
-const SVG_TILES = ['grass', 'water', 'lava', 'crystal'];
+const SVG_TILE_IDS = new Set(['grass', 'water', 'lava', 'crystal']);
 
 // Helper to rotate a point around a center
 function rotatePoint(point: { x: number, y: number }, center: { x: number, y: number }, angleDegrees: number) {
@@ -1860,6 +1857,14 @@ export function LevelEditorCanvas() {
 
         const sortedLayers = [...layers].sort((a, b) => a.order - b.order);
 
+        // Pre-compute water surface lookup for O(1) detection
+        const waterOccupied = new Set<string>();
+        tiles.forEach(t => {
+            if (t.spriteId === 'water') {
+                waterOccupied.add(`${t.layerId}:${t.gridX},${t.gridY}`);
+            }
+        });
+
         sortedLayers.forEach(layer => {
             if (!layer.visible) return;
 
@@ -1873,13 +1878,30 @@ export function LevelEditorCanvas() {
             }
 
             layerTiles.forEach(tile => {
-                if (SVG_TILES.includes(tile.spriteId)) return; // Skip rendering SVG tiles via canvas
-
                 const x = tile.gridX * gridSize;
                 const y = tile.gridY * gridSize;
 
                 // [OPTIMIZATION] Viewport Culling
                 if (x > cullMaxX || x < cullMinX || y > cullMaxY || y < cullMinY) return;
+
+                // SVG Tiles: render via pre-cached canvas bitmaps
+                if (SVG_TILE_IDS.has(tile.spriteId)) {
+                    const currentTime = performance.now() / 1000;
+                    // O(1) water surface detection via pre-computed set
+                    const isSurface = tile.spriteId === 'water'
+                        ? !waterOccupied.has(`${tile.layerId}:${tile.gridX},${tile.gridY - 1}`)
+                        : undefined;
+                    TileSpriteCache.drawSvgTile(ctx, x, y, gridSize, tile.spriteId, currentTime, {
+                        isSurface,
+                        opacity: (tile.opacity ?? 1) * layerOpacity,
+                        rotation: tile.rotation,
+                        scaleX: tile.scaleX,
+                        scaleY: tile.scaleY,
+                        glowColor: tile.glowColor,
+                        glow: tile.glow,
+                    });
+                    return;
+                }
 
                 drawTile(ctx, x, y, gridSize, tile.spriteId, (tile.opacity ?? 1) * layerOpacity, tile.glowColor, tile.scaleX, tile.scaleY, tile.rotation, tile.text ? { text: tile.text, family: tile.fontFamily || 'sans-serif', size: tile.fontSize || 32, color: tile.fontColor || '#ffffff' } : undefined, tile.glow);
 
@@ -2487,38 +2509,6 @@ export function LevelEditorCanvas() {
                 onMouseUp={onMouseUp}
                 onWheel={handleWheel}
             />
-            {/* --- DOM Overlay for SVG Tiles --- */}
-            {layers.filter(l => l.visible).map(layer => {
-                const layerTilesArr = Array.from(tiles.values());
-                const screenW = containerRef.current?.getBoundingClientRect().width || window.innerWidth;
-                const screenH = containerRef.current?.getBoundingClientRect().height || window.innerHeight;
-
-                const layerTiles = layerTilesArr.filter(t => {
-                    if (t.layerId !== layer.id || !SVG_TILES.includes(t.spriteId)) return false;
-                    const px = t.gridX * gridSize * zoom + pan.x;
-                    const py = t.gridY * gridSize * zoom + pan.y;
-                    const pSize = gridSize * zoom;
-                    return px + pSize >= -100 && px <= screenW + 100 && py + pSize >= -100 && py <= screenH + 100;
-                });
-
-                return layerTiles.map(tile => {
-                    const x = tile.gridX * gridSize * zoom + pan.x;
-                    const y = tile.gridY * gridSize * zoom + pan.y;
-                    const tileProps = { key: tile.id, x, y, size: gridSize * zoom, opacity: tile.opacity, rotation: tile.rotation, scaleX: tile.scaleX, scaleY: tile.scaleY, glowColor: tile.glowColor, glow: tile.glow };
-
-                    if (tile.spriteId === 'grass') return <GrassTile {...tileProps} />;
-                    if (tile.spriteId === 'lava') {
-                        // Same interior optimization for Lava? Let's just do it for dirt for now since Dirt is most spammed
-                        return <LavaTile {...tileProps} />;
-                    }
-                    if (tile.spriteId === 'crystal') return <CrystalTile {...tileProps} />;
-                    if (tile.spriteId === 'water') {
-                        const isSurface = !layerTilesArr.some(t => t.layerId === layer.id && t.spriteId === 'water' && t.gridX === tile.gridX && t.gridY === tile.gridY - 1);
-                        return <WaterTile {...tileProps} isSurface={isSurface} />;
-                    }
-                    return null;
-                });
-            })}
             {contextMenu && (
                 <EditorContextMenu
                     x={contextMenu.x}
