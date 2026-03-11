@@ -1,15 +1,13 @@
 import type { PeerJSOption } from 'peerjs';
 
 export const PEER_CONFIG: PeerJSOption = {
-    // Connect to the PeerServer via the Vite dev server proxy at /peerjs.
-    // This uses the same host and port the page was loaded from (e.g. 192.168.x.x:5173),
-    // so it works across the LAN without needing direct access to port 9000.
-    host: typeof window !== 'undefined' ? window.location.hostname : 'localhost',
-    port: typeof window !== 'undefined' ? Number(window.location.port) || 5173 : 5173,
-    // PeerJS auto-appends 'peerjs/' to this path when building endpoint URLs.
-    // So path '/' → '/peerjs/id', which the Vite proxy forwards correctly to PeerServer.
-    // Do NOT set this to '/peerjs' — that would produce a double prefix '/peerjs/peerjs/id'.
-    path: '/',
+    // Use the official, public PeerJS cloud server for robust global multiplayer.
+    // This avoids reliance on a local Vite proxy that drops WebSockets and won't
+    // exist when the game is compiled to Electron or production builds.
+    
+    // host: typeof window !== 'undefined' ? window.location.hostname : 'localhost',
+    // port: typeof window !== 'undefined' ? Number(window.location.port) || 5173 : 5173,
+    // path: '/',
 
     // Explicit public STUN servers for WebRTC NAT traversal.
     config: {

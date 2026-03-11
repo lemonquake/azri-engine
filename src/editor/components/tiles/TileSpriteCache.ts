@@ -351,7 +351,7 @@ function generateGrassFrames(): OffscreenCanvas[] {
 
 function generateGrassRustleFrames(): OffscreenCanvas[] {
     const frames: OffscreenCanvas[] = [];
-    const rustleFrameCount = 8; // Shorter animation
+    const rustleFrameCount = 16; // More frames for smoother animation
 
     for (let i = 0; i < rustleFrameCount; i++) {
         const canvas = createFrame();
@@ -361,26 +361,31 @@ function generateGrassRustleFrames(): OffscreenCanvas[] {
         ctx.clearRect(0, 0, 32, 32);
 
         const blades = [
-            { path: 'M 6 32 Q 4 20 2 12 Q 7 16 8 32 Z', fill: '#1e7a1e' },
-            { path: 'M 26 32 Q 28 20 30 14 Q 25 18 24 32 Z', fill: '#208520' },
-            { path: 'M 12 32 Q 10 15 14 6 Q 18 16 20 32 Z', fill: '#2ea62e' },
-            { path: 'M 18 32 Q 22 22 26 16 Q 16 22 14 32 Z', fill: '#39c439' },
-            { path: 'M 8 32 Q 10 24 6 16 Q 12 24 14 32 Z', fill: '#1bcf1b' },
+            { path: 'M 6 32 Q 4 20 2 12 Q 7 16 8 32 Z', fill: '#1e7a1e', phase: 0 },
+            { path: 'M 26 32 Q 28 20 30 14 Q 25 18 24 32 Z', fill: '#208520', phase: 0.15 },
+            { path: 'M 12 32 Q 10 15 14 6 Q 18 16 20 32 Z', fill: '#2ea62e', phase: 0.3 },
+            { path: 'M 18 32 Q 22 22 26 16 Q 16 22 14 32 Z', fill: '#39c439', phase: 0.45 },
+            { path: 'M 8 32 Q 10 24 6 16 Q 12 24 14 32 Z', fill: '#1bcf1b', phase: 0.1 },
         ];
 
-        // CSS rustle keyframes: 0→0°, 25→25°, 50→-15°, 75→10°, 100→0° 
-        let rustleAngle: number;
-        if (t < 0.25) {
-            rustleAngle = lerp(0, 25, t / 0.25);
-        } else if (t < 0.5) {
-            rustleAngle = lerp(25, -15, (t - 0.25) / 0.25);
-        } else if (t < 0.75) {
-            rustleAngle = lerp(-15, 10, (t - 0.5) / 0.25);
-        } else {
-            rustleAngle = lerp(10, 0, (t - 0.75) / 0.25);
-        }
-
         for (const blade of blades) {
+            // Per-blade phase offset gives a natural ripple/wave effect
+            const bt = (t + blade.phase) % 1;
+
+            // Gentler rustle: 0→12°, 25→-8°, 50→5°, 75→-3°, 100→0°
+            let rustleAngle: number;
+            if (bt < 0.2) {
+                rustleAngle = lerp(0, 12, bt / 0.2);
+            } else if (bt < 0.45) {
+                rustleAngle = lerp(12, -8, (bt - 0.2) / 0.25);
+            } else if (bt < 0.65) {
+                rustleAngle = lerp(-8, 5, (bt - 0.45) / 0.2);
+            } else if (bt < 0.85) {
+                rustleAngle = lerp(5, -2, (bt - 0.65) / 0.2);
+            } else {
+                rustleAngle = lerp(-2, 0, (bt - 0.85) / 0.15);
+            }
+
             ctx.save();
             ctx.translate(16, 32);
             ctx.rotate(rustleAngle * Math.PI / 180);

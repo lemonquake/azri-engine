@@ -21,6 +21,13 @@ export interface CharacterAnimationState {
     startX?: number;
     attackCooldown?: number;
     dead?: boolean;
+    // Polish & Combat Overhaul
+    hitStunTimer?: number;
+    hitStunDuration?: number;
+    comboVariant?: number; // 1, 2, or 3
+    comboStep?: number;
+    isAirCombo?: boolean;
+    hitIntensity?: 'light' | 'medium' | 'heavy';
     // Multiplayer
     playerIndex?: number;
     username?: string;
@@ -178,14 +185,42 @@ export class DefaultCharacter {
         let daggerColor = char.playerIndex === 2 ? '#a855f7' : char.playerIndex === 3 ? '#fbbf24' : '#ff2222';
         let daggerGlow = 10 + Math.sin(t * 15) * 5; // Pulsing
 
-        // Hit flash
+        // Hit flash & shake (Intensity based)
+        let hitShakeX = 0;
+        let hitShakeY = 0;
+
         if (char.state === 'hit') {
-            bodyColor = '#ffffff';
-            visorColor = '#ffffff';
-            scarfColor = '#ffffff';
-            limbColor = '#ffffff';
-            eyeColor = '#ff0000';
-            ctx.translate((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4); // intense shake
+            const intensity = char.hitIntensity || 'light';
+
+            // White out based on hit stun remaining (brighter at start)
+            let flashStrength = 1.0;
+            if (char.hitStunDuration && char.hitStunDuration > 0 && char.hitStunTimer) {
+                flashStrength = char.hitStunTimer / char.hitStunDuration;
+            }
+
+            if (flashStrength > 0.5) {
+                bodyColor = '#ffffff';
+                visorColor = '#ffffff';
+                scarfColor = '#ffffff';
+                limbColor = '#ffffff';
+                eyeColor = '#ff0000';
+            }
+
+            // Shake severity based on intensity
+            let shakeMult = 2;
+            if (intensity === 'medium') shakeMult = 4;
+            if (intensity === 'heavy') shakeMult = 8;
+
+            if (flashStrength > 0.2) {
+                hitShakeX = (Math.random() - 0.5) * shakeMult;
+                hitShakeY = (Math.random() - 0.5) * shakeMult;
+            }
+            ctx.translate(hitShakeX, hitShakeY);
+
+            // Squash on heavy hits
+            if (intensity === 'heavy') {
+                ctx.scale(1.2, 0.8);
+            }
         }
 
         // --- Body Parts Setup ---
@@ -423,18 +458,112 @@ export class DefaultCharacter {
                     footL = { x: -12, y: char.height / 2 + 2, rot: 0.2, scale: 1 }; footR = { x: -2, y: char.height / 2 - 5, rot: 0.5, scale: 1 };
                     scarfTrail = -30; scarfWave = 0;
                 }
+            } else if (char.state.startsWith('attack_air_base_')) {
+                if (step === 1) {
+                    // Mid-air spin slash
+                    bodyRot = progress * Math.PI * 4;
+                    bodyYOffset = 0;
+                    handR = { x: 15, y: 0, rot: Math.PI / 2, scale: 1.5 };
+                    handL = { x: -15, y: 0, rot: -Math.PI / 2, scale: 1.5 };
+                    footL = { x: -8, y: char.height / 2, rot: Math.PI / 4, scale: 1 };
+                    footR = { x: 8, y: char.height / 2, rot: Math.PI / 3, scale: 1 };
+                    scarfTrail = 0; scarfWave = 20;
+                } else if (step === 2) {
+                    // Cross cut
+                    bodyRot = 0.2; bodyYOffset = 0;
+                    handR = { x: 15 - progress * 20, y: -5 + progress * 10, rot: -Math.PI / 4, scale: 1.5 };
+                    handL = { x: 5 + progress * 20, y: -5 + progress * 10, rot: Math.PI / 4, scale: 1.5 };
+                    footL = { x: -10, y: char.height / 2, rot: 0.1, scale: 1 };
+                    footR = { x: 5, y: char.height / 2 + 5, rot: 0.5, scale: 1 };
+                    scarfTrail = -15; scarfWave = 10;
+                } else {
+                    // Diving thrust finisher
+                    bodyRot = Math.PI / 4; bodyYOffset = 5;
+                    handR = { x: 15, y: 15, rot: Math.PI / 4, scale: 1.8 };
+                    handL = { x: 5, y: 5, rot: Math.PI / 4, scale: 1.6 };
+                    footL = { x: -15, y: char.height / 2 - 5, rot: 0, scale: 1 };
+                    footR = { x: -5, y: char.height / 2 - 10, rot: 0, scale: 1 };
+                    scarfTrail = -25; scarfWave = -10;
+                }
+            } else if (char.state.startsWith('attack_air_up_')) {
+                if (step === 1) {
+                    // Aerial rising slash
+                    bodyRot = -0.2; bodyYOffset = -5;
+                    handR = { x: 10, y: -15 - progress * 10, rot: Math.PI, scale: 1.5 };
+                    handL = { x: -5, y: -5, rot: -Math.PI / 4, scale: 1 };
+                    footL = { x: -5, y: char.height / 2 + 5, rot: 0.2, scale: 1 };
+                    footR = { x: 8, y: char.height / 2 + 10, rot: 0.5, scale: 1 };
+                    scarfTrail = -5; scarfWave = 20;
+                } else if (step === 2) {
+                    // Helicopter spin
+                    bodyRot = progress * Math.PI * 6; // Fast spin
+                    bodyYOffset = -8;
+                    handR = { x: 18, y: -5, rot: Math.PI / 2, scale: 1.5 };
+                    handL = { x: -18, y: -5, rot: -Math.PI / 2, scale: 1.5 };
+                    footL = { x: -5, y: char.height / 2, rot: 0.2, scale: 1 };
+                    footR = { x: 5, y: char.height / 2, rot: 0.2, scale: 1 };
+                    scarfTrail = 0; scarfWave = 25;
+                } else {
+                    // Sky breaker split
+                    bodyRot = 0; bodyYOffset = -12;
+                    handR = { x: 20, y: -10, rot: Math.PI / 4, scale: 1.8 };
+                    handL = { x: -20, y: -10, rot: -Math.PI / 4, scale: 1.8 };
+                    footL = { x: -15, y: char.height / 2, rot: -0.5, scale: 1 };
+                    footR = { x: 15, y: char.height / 2, rot: 0.5, scale: 1 };
+                    scarfTrail = 0; scarfWave = 30;
+                }
+            } else if (char.state.startsWith('attack_air_down_')) {
+                if (step === 1) {
+                    // Downward diagonal slash
+                    bodyRot = 0.4; bodyYOffset = 5;
+                    handR = { x: 15, y: 15, rot: 0, scale: 1.5 };
+                    handL = { x: 0, y: 5, rot: -Math.PI / 4, scale: 1 };
+                    footL = { x: -10, y: char.height / 2, rot: 0, scale: 1 };
+                    footR = { x: 5, y: char.height / 2 - 5, rot: 0, scale: 1 };
+                    scarfTrail = -20; scarfWave = 0;
+                } else {
+                    // Meteor dive
+                    bodyRot = Math.PI / 2; bodyYOffset = 15;
+                    handR = { x: 0, y: 25, rot: 0, scale: 2.0 };
+                    handL = { x: 0, y: 15, rot: 0, scale: 2.0 };
+                    footL = { x: -15, y: 0, rot: 0, scale: 1 };
+                    footR = { x: -15, y: 10, rot: 0, scale: 1 };
+                    scarfTrail = -30; scarfWave = -10;
+                }
             }
         } else if (char.state === 'hit') {
-            bodyRot = -0.5; // knocked back
-            bodyYOffset = -2;
-            handL = { x: -15, y: -10, rot: -Math.PI / 2, scale: 1 };
-            handR = { x: -5, y: -15, rot: -Math.PI / 2, scale: 1 };
-            footL = { x: 10, y: char.height / 2 - 5, rot: -0.5, scale: 1 };
-            footR = { x: -2, y: char.height / 2, rot: 0, scale: 1 };
-            scarfTrail = 20;
-            scarfWave = -10;
+            let hitProgress = 1.0;
+            if (char.hitStunDuration && char.hitStunDuration > 0 && char.hitStunTimer) {
+                // 1.0 is start of hit (max stun time), 0.0 is end of hit
+                hitProgress = char.hitStunTimer / char.hitStunDuration;
+            } else {
+                // Decay based on animation timer for player/old logic fallback
+                hitProgress = Math.max(0, 1.0 - (t / 0.4));
+            }
 
+            // Phase 1: Violet backward snap (hitProgress 0.7 - 1.0)
+            // Phase 2: Shaking hold (hitProgress 0.3 - 0.7)
+            // Phase 3: Recovery (hitProgress 0.0 - 0.3)
 
+            if (hitProgress > 0.7) {
+                // Whip back
+                bodyRot = -0.6 * (hitProgress);
+                bodyYOffset = -4;
+                handL = { x: -20, y: -15, rot: -Math.PI / 2, scale: 1.2 };
+                handR = { x: -10, y: -20, rot: -Math.PI / 2, scale: 1.2 };
+                footL = { x: 15, y: char.height / 2 - 8, rot: -0.8, scale: 1 };
+                footR = { x: 5, y: char.height / 2 - 2, rot: -0.4, scale: 1 };
+                scarfTrail = 25; scarfWave = -15;
+            } else {
+                // Recovery/Hold
+                bodyRot = -0.3 * (hitProgress / 0.7);
+                bodyYOffset = -2;
+                handL = { x: -15, y: -10, rot: -Math.PI / 4, scale: 1 };
+                handR = { x: -5, y: -10, rot: -Math.PI / 4, scale: 1 };
+                footL = { x: 10, y: char.height / 2 - 5, rot: -0.5, scale: 1 };
+                footR = { x: -2, y: char.height / 2, rot: 0, scale: 1 };
+                scarfTrail = 15; scarfWave = -5;
+            }
         } else {
             // 3 Idle Animations - Cycle every ~4 seconds
             const idleCycle = Math.floor(t / 4) % 3;

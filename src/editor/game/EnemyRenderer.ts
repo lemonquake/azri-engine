@@ -18,9 +18,26 @@ export class EnemyRenderer {
         const eType = enemy.enemyType || 'melee';
 
         // Hit flash logic
-        if (state === 'hit') {
-            ctx.translate((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4);
-            ctx.globalCompositeOperation = 'lighter'; // Makes drawing extremely bright
+        if (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) {
+            const intensity = enemy.hitIntensity || 'light';
+            let shakeMult = 2;
+            if (intensity === 'medium') shakeMult = 5;
+            if (intensity === 'heavy') shakeMult = 10;
+
+            ctx.translate((Math.random() - 0.5) * shakeMult, (Math.random() - 0.5) * shakeMult);
+
+            if (enemy.hitStunTimer) {
+                const flashPercent = enemy.hitStunDuration ? (enemy.hitStunTimer / enemy.hitStunDuration) : 0;
+                if (flashPercent > 0.5) {
+                    ctx.globalCompositeOperation = 'lighter';
+                }
+            } else {
+                ctx.globalCompositeOperation = 'lighter';
+            }
+
+            if (intensity === 'heavy') {
+                ctx.scale(1.1, 0.9); // Squash
+            }
         }
 
         // Delegate to specific render functions
@@ -77,7 +94,7 @@ export class EnemyRenderer {
         const h = enemy.height;
 
         // Shadow Body (Jagged Polygon)
-        ctx.fillStyle = state === 'hit' ? '#ffffff' : '#111';
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ffffff' : '#111';
         ctx.beginPath();
         ctx.moveTo(0, -h / 2);
         ctx.lineTo(w / 2 - 2, -h / 4);
@@ -91,7 +108,7 @@ export class EnemyRenderer {
         ctx.fill();
 
         // Glowing Eyes
-        ctx.fillStyle = state === 'hit' ? '#ff0000' : '#8b5cf6'; // Purple eyes
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ff0000' : '#8b5cf6'; // Purple eyes
         ctx.shadowColor = ctx.fillStyle;
         ctx.shadowBlur = 10;
         ctx.beginPath();
@@ -105,7 +122,7 @@ export class EnemyRenderer {
         ctx.save();
         ctx.translate(armDist, 0);
         ctx.rotate(armRot);
-        ctx.fillStyle = state === 'hit' ? '#ffffff' : '#333';
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ffffff' : '#333';
         ctx.beginPath();
         ctx.moveTo(0, 0);
         ctx.lineTo(15, -2);
@@ -142,7 +159,7 @@ export class EnemyRenderer {
         const h = enemy.height;
 
         // Base Body
-        ctx.fillStyle = state === 'hit' ? '#ffffff' : '#1e1b4b'; // Deep indigo shadow
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ffffff' : '#1e1b4b'; // Deep indigo shadow
         ctx.beginPath();
         ctx.moveTo(0, -h / 2 + 4);
         ctx.lineTo(w / 2 - 2, 0);
@@ -152,7 +169,7 @@ export class EnemyRenderer {
         ctx.fill();
 
         // Eyes
-        ctx.fillStyle = state === 'hit' ? '#ff0000' : '#f59e0b'; // Amber
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ff0000' : '#f59e0b'; // Amber
         ctx.shadowColor = ctx.fillStyle;
         ctx.shadowBlur = 15;
         ctx.beginPath();
@@ -162,7 +179,7 @@ export class EnemyRenderer {
         // Cannon Arm
         ctx.save();
         ctx.translate(w / 4, 0);
-        ctx.fillStyle = state === 'hit' ? '#ffffff' : '#312e81';
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ffffff' : '#312e81';
         ctx.fillRect(0, -4, 18, 8);
         // glowing tip
         ctx.fillStyle = '#f59e0b';
@@ -201,7 +218,7 @@ export class EnemyRenderer {
 
         const w = enemy.width;
         const h = enemy.height;
-        const eColor = state === 'hit' ? '#ffffff' : '#2e1065'; // Very dark purple
+        const eColor = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ffffff' : '#2e1065'; // Very dark purple
 
         // Huge Body
         ctx.fillStyle = eColor;
@@ -210,18 +227,18 @@ export class EnemyRenderer {
         ctx.fill();
 
         // Small Legs
-        ctx.fillStyle = state === 'hit' ? '#ffffff' : '#000';
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ffffff' : '#000';
         ctx.fillRect(-w / 2 + 4, h / 2 - 10, 10, 10);
         ctx.fillRect(w / 2 - 14, h / 2 - 10, 10, 10);
 
         // Angry Glowing Eyes
-        ctx.fillStyle = state === 'hit' ? '#ff0000' : '#10b981'; // Emerald glow
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ff0000' : '#10b981'; // Emerald glow
         ctx.shadowColor = ctx.fillStyle;
         ctx.shadowBlur = 20;
         ctx.fillRect(w / 4 - 4, -h / 4, 12, 4);
 
         // Massive Arms
-        ctx.fillStyle = state === 'hit' ? '#ffffff' : '#4c1d95';
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ffffff' : '#4c1d95';
         ctx.shadowBlur = 0; // reset shadow for arms
 
         // Far arm
@@ -261,7 +278,7 @@ export class EnemyRenderer {
         const w = enemy.width;
         const h = enemy.height;
 
-        ctx.fillStyle = state === 'hit' ? '#ffffff' : '#0f172a'; // Slate dark
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ffffff' : '#0f172a'; // Slate dark
 
         // Body (kite shape)
         ctx.beginPath();
@@ -273,7 +290,7 @@ export class EnemyRenderer {
         ctx.fill();
 
         // Eye
-        ctx.fillStyle = state === 'hit' ? '#ff0000' : '#ef4444'; // Red eye
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ff0000' : '#ef4444'; // Red eye
         ctx.shadowColor = ctx.fillStyle;
         ctx.shadowBlur = 10;
         ctx.beginPath();
@@ -284,7 +301,7 @@ export class EnemyRenderer {
         ctx.save();
         ctx.translate(0, -4);
         ctx.scale(1, 1 + wingFlap);
-        ctx.fillStyle = state === 'hit' ? '#ffffff' : 'rgba(30, 41, 59, 0.9)';
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ffffff' : 'rgba(30, 41, 59, 0.9)';
         ctx.beginPath();
         ctx.moveTo(-w / 4, 0);
         ctx.lineTo(-w / 2, -h / 2 - 10);
@@ -297,7 +314,7 @@ export class EnemyRenderer {
         ctx.save();
         ctx.translate(0, -4);
         ctx.scale(1, 1 - wingFlap); // Opposite phase visually
-        ctx.fillStyle = state === 'hit' ? '#ffffff' : 'rgba(15, 23, 42, 0.9)';
+        ctx.fillStyle = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ffffff' : 'rgba(15, 23, 42, 0.9)';
         ctx.beginPath();
         ctx.moveTo(-w / 4, 0);
         ctx.lineTo(-10, -h / 2 - 8);
@@ -338,7 +355,7 @@ export class EnemyRenderer {
         ctx.rotate(rot);
 
         const h = enemy.height;
-        const hitColor = state === 'hit' ? '#ffffff' : null;
+        const hitColor = (state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) ? '#ffffff' : null;
 
         // Tall slender body
         ctx.fillStyle = hitColor || '#09090b'; // Black/Zinc 950

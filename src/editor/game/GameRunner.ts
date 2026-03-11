@@ -165,6 +165,9 @@ export class GameRunner {
     // Pre-computed water surface lookup: "layerId:gridX,gridY" keys for tiles that have water ABOVE them
     private waterOccupied: Set<string> = new Set();
 
+    // Track grass tiles currently rustling: tileId → remaining rustle time (seconds)
+    private grassRustling: Map<string, number> = new Map();
+
     // Visual Effects
     private particles: Particle[] = [];
     private screenShakeTimer: number = 0;
@@ -221,21 +224,32 @@ export class GameRunner {
     }
 
     private initMultiplayer(state: any) {
+        // Did the LobbyModal leave us a connected NetworkManager?
+        const lobbyNm = (window as any)._lobbyNetworkManager as NetworkManager | undefined;
+        
+        if (lobbyNm && (state.multiplayerHostId || state.isMultiplayerHost)) {
+            console.log("GameRunner: Hooking into existing Lobby NetworkManager!");
+            this.networkManager = lobbyNm;
+            
+            // Override its callbacks so it talks to the GameRunner now
+            (this.networkManager as any).onMessageCallback = this.handleNetworkMessage.bind(this);
+            (this.networkManager as any).onDisconnectCallback = (connId: string) => {
+                this.remotePlayers.delete(connId);
+            };
+            
+            if (this.player) {
+                this.player.playerIndex = this.networkManager.myPlayerIndex;
+            }
+            return;
+        }
+
+        // Fallback for direct playmode toggle bypassing lobby (Singleplayer)
         if (!state.multiplayerHostId && !state.isMultiplayerHost) return;
 
+        console.log("GameRunner: Creating fresh NetworkManager (no lobby instance found)");
         this.networkManager = new NetworkManager(
             this.handleNetworkMessage.bind(this),
-            () => {
-                // On new connection, host sends the map to joiner
-                if (this.networkManager?.isHost) {
-                    const mapData = useEditorStore.getState();
-                    // In a real app we'd serialize the required map subset
-                    this.networkManager.broadcast('map_sync', {
-                        levelId: mapData.levelId,
-                        levelName: mapData.levelName
-                    });
-                }
-            },
+            () => {},
             (connId) => {
                 this.remotePlayers.delete(connId);
             }
@@ -247,9 +261,7 @@ export class GameRunner {
             });
             if (this.player) this.player.playerIndex = 1; // Map host to player 1
         } else if (state.multiplayerHostId && !state.isMultiplayerHost) {
-            // My ID could be generated, but we just need the host ID to join
-            const myTempId = `client_${Date.now()}`;
-            this.networkManager.joinGame(myTempId, state.multiplayerHostId).then(() => {
+            this.networkManager.joinGame(state.multiplayerHostId).then(() => {
                 console.log("GameRunner: Joined multiplayer host", state.multiplayerHostId);
             });
             if (this.player) this.player.playerIndex = 2; // Map first joiner to player 2 initially
@@ -278,13 +290,6 @@ export class GameRunner {
                 player.isGrounded = remoteState.isGrounded;
                 player.playerIndex = remoteState.playerIndex;
             }
-        } else if (msg.type === 'map_sync' && !this.networkManager?.isHost) {
-            // Received map from host
-            const mapSync = msg.data;
-            console.log("GameRunner: Received map_sync from host:", mapSync.levelName);
-            // In a full implementation, we would load the entire map data 
-            // For now, we rely on the client loading the same map from their local DB 
-            // using the levelId provided by command line args or UI
         }
     }
 
@@ -394,6 +399,7 @@ export class GameRunner {
             maxExp: 100,
             level: 1,
             playerIndex: myPlayerIndex,
+            username: localStorage.getItem('azri_mp_username') || undefined,
             // Gameplay Mechanics
             jumpCount: 0,
             maxJumps: 2,
@@ -610,6 +616,16 @@ export class GameRunner {
     private update(dt: number) {
         if (!this.player || this.isGameOver) return;
 
+        // ─── Decay grass rustle timers ───
+        for (const [tileId, remaining] of this.grassRustling) {
+            const next = remaining - dt;
+            if (next <= 0) {
+                this.grassRustling.delete(tileId);
+            } else {
+                this.grassRustling.set(tileId, next);
+            }
+        }
+
         // --- Network Sync ---
         if (this.networkManager) {
             this.syncTimer -= dt;
@@ -779,104 +795,170 @@ export class GameRunner {
             this.player.attackCooldown -= dt;
         }
 
+        // ---- NEW COMBO SYSTEM ----
         const isAttacking = this.player.state.startsWith('attack');
 
-        // Attack Mechanics (Combo Logic)
+        // Evaluate attack recovery
+        if (this.player.attackCooldown && this.player.attackCooldown > 0) {
+            this.player.attackCooldown -= dt;
+        }
         if (this.player.attackCooldown && this.player.attackCooldown > 0) {
             this.player.attackCooldown -= dt;
         }
 
-        const canAttack = this.player.state !== 'hit' &&
-            (!isAttacking || (isAttacking && this.player.animationTimer > 0.2 && (this.player.attackCooldown || 0) <= 0)) &&
+        // Can we attack?
+        // Must not be hit-stunned. If attacking, must be past a certain animation frame (allow combo buffer)
+        const canAttack = this.player.state !== 'hit' && (this.player.hitStunTimer || 0) <= 0 &&
+            (!isAttacking || (isAttacking && this.player.animationTimer > 0.25 && (this.player.attackCooldown || 0) <= 0)) &&
             (this.player.isGrounded || (this.player.airAttackCount || 0) < 3);
 
         if (canAttack && isJustPressed('q')) {
-            if (!this.player.isGrounded) {
-                this.player.airAttackCount = (this.player.airAttackCount || 0) + 1;
-            }
-            let prefix = 'attack_base_';
-            if (this.keys.has('w') || this.keys.has('arrowup')) {
-                prefix = 'attack_up_';
-            } else if (this.keys.has('s') || this.keys.has('arrowdown')) {
-                prefix = 'attack_down_';
-            }
-
+            let variant = 1;      // 1: Swift, 2: Chain, 3: Heavy
             let step = 1;
-            if (isAttacking && this.player.state.startsWith(prefix)) {
-                const currentStep = parseInt(this.player.state.slice(-1));
-                if (currentStep && currentStep < 3) {
-                    step = currentStep + 1;
-                }
+            let isAir = !this.player.isGrounded;
+
+            if (isAir) {
+                this.player.airAttackCount = (this.player.airAttackCount || 0) + 1;
+                // Air variants
+                if (this.keys.has('w') || this.keys.has('arrowup')) variant = 2; // Air Up
+                else if (this.keys.has('s') || this.keys.has('arrowdown')) variant = 3; // Air Down
+                else variant = 1; // Air Neutral
+            } else {
+                // Ground variants
+                if (this.keys.has('w') || this.keys.has('arrowup')) variant = 2; // Ground Chain
+                else if (this.keys.has('s') || this.keys.has('arrowdown')) variant = 3; // Ground Heavy
+                else variant = 1; // Ground Swift
             }
 
-            this.player.state = `${prefix}${step}`;
+            // Combo chaining logic
+            if (isAttacking) {
+                // If we are already in a combo, prioritize continuing that exact variant, UNLESS it's an air combo transition
+                if (this.player.comboVariant && this.player.comboStep) {
+                    variant = this.player.comboVariant;
+                    const maxSteps = (variant === 1 && !isAir) ? 3 : (isAir && variant === 3 ? 2 : (isAir ? 3 : 4));
+                    if (this.player.comboStep < maxSteps) {
+                        step = this.player.comboStep + 1;
+                    } else {
+                        step = 1; // Reset loop (or could force end combo)
+                    }
+                }
+            } else {
+                step = 1;
+            }
+
+            // Save combo state
+            this.player.comboVariant = variant;
+            this.player.comboStep = step;
+            this.player.isAirCombo = isAir;
+
+            // Generate state string
+            const prefix = isAir ? 'attack_air_' : 'attack_';
+            let vStr = 'base_';
+            if (variant === 2) vStr = 'up_';
+            else if (variant === 3) vStr = 'down_';
+
+            this.player.state = `${prefix}${vStr}${step}`;
             this.player.animationTimer = 0;
-            this.player.attackCooldown = 0.2; // brief window to buffer next input
+            this.player.attackCooldown = 0.2; // Buffer window
 
-            // Movement and hitbox specifics
-            let range = 60 + step * 30; // 90, 120, 150
+            // --- Movement & Hitbox Tuning per Step ---
+            let range = 60 + step * 20;
             let height = this.player.height;
-            let dmg = 15 + step * 10;
+            let dmg = 10 + step * 8;
+            let stunIntensity: 'light' | 'medium' | 'heavy' = 'light';
+            let isFinalHit = false;
 
-            if (step === 3) {
-                // Player Stretch for impact
+            // Step specific overrides
+            if (variant === 1 && step === 3) {
+                isFinalHit = true;
+                stunIntensity = 'medium';
+                this.player.velocityX = this.player.facingRight ? 350 : -350;
+            } else if (variant === 2 && step === 4 && !isAir) {
+                isFinalHit = true;
+                stunIntensity = 'heavy';
+                dmg += 15;
+                this.player.velocityY = -200; // Rising finish
+            } else if (variant === 2 && step === 3 && isAir) {
+                isFinalHit = true;
+                stunIntensity = 'heavy';
+            } else if (variant === 3 && step === 4 && !isAir) {
+                isFinalHit = true;
+                stunIntensity = 'heavy';
+                dmg += 25; // Massive ground slam
+                this.player.velocityX = this.player.facingRight ? 100 : -100;
+            } else if (variant === 3 && step === 2 && isAir) {
+                isFinalHit = true;
+                stunIntensity = 'heavy';
+                this.player.velocityY = 600; // Dive!
+            } else if (step > 1) {
+                stunIntensity = 'medium';
+                if (!isAir && variant === 1) this.player.velocityX = this.player.facingRight ? 150 : -150;
+            }
+
+            // --- Apply Hitbox & VFX ---
+            if (isFinalHit) {
                 this.player.scaleX = 0.5;
                 this.player.scaleY = 1.6;
-
-                // Slash Effect
                 this.spawnParticle({
                     x: this.player.facingRight ? this.player.x + this.player.width + 20 : this.player.x - 20,
                     y: this.player.y + this.player.height / 2,
-                    vx: 0, vy: 0,
-                    life: 0.15,
-                    color: '#f87171',
-                    size: 80, // Massive slash
-                    shape: 'slash' as any,
-                    rotation: this.player.facingRight ? 45 : -45,
-                    shrink: true
+                    vx: 0, vy: 0, life: 0.15, color: '#f87171', size: 90, shape: 'slash' as any,
+                    rotation: this.player.facingRight ? 45 : -45, shrink: true
                 });
             } else {
-                // Normal hit effects
                 this.player.scaleX = 1.2;
                 this.player.scaleY = 0.9;
-
-                // Slash Effect
                 this.spawnParticle({
                     x: this.player.facingRight ? this.player.x + this.player.width + 10 : this.player.x - 10,
                     y: this.player.y + this.player.height / 2,
-                    vx: 0, vy: 0,
-                    life: 0.1,
-                    color: '#fca5a5',
-                    size: 40,
-                    shape: 'slash' as any,
-                    rotation: this.player.facingRight ? 20 + step * 10 : -20 - step * 10,
-                    shrink: true
+                    vx: 0, vy: 0, life: 0.1, color: '#fca5a5', size: 50, shape: 'slash' as any,
+                    rotation: this.player.facingRight ? 20 + step * 10 : -20 - step * 10, shrink: true
                 });
             }
 
-            if (prefix === 'attack_base_') {
-                if (step === 3) this.player.velocityX = this.player.facingRight ? 250 : -250;
-                this.checkMeleeHitbox(range, height, dmg, 0, 0, step === 3);
-            } else if (prefix === 'attack_up_') {
-                if (!this.player.isGrounded) this.player.velocityY = -150 - step * 50;
-                this.checkMeleeHitbox(range + 20, height * 2.5, dmg, 0, -height * 1.5, step === 3); // Huge upwards box
-            } else if (prefix === 'attack_down_') {
-                if (!this.player.isGrounded) this.player.velocityY = 400;
-                this.checkMeleeHitbox(range, height * 2, dmg + 10, 0, height * 0.5, step === 3); // Hurtbox extends below feet
+            // Exert hitboxes based on variant
+            if (variant === 1) {
+                this.checkMeleeHitbox(range, height, dmg, 0, 0, isFinalHit, stunIntensity);
+            } else if (variant === 2) {
+                if (!isAir) this.player.velocityY = -100 - step * 30;
+                this.checkMeleeHitbox(range + 10, height * 2.5, dmg, 0, -height * 1.5, isFinalHit, stunIntensity);
+            } else if (variant === 3) {
+                if (!isAir && step < 4) this.player.velocityY = 150; // Ground heavy pins down
+                this.checkMeleeHitbox(range, height * 2, dmg + 5, 0, height * 0.5, isFinalHit, stunIntensity);
             }
         }
 
+        // Combo state ending
         if (this.player.state.startsWith('attack')) {
-            if (this.player.animationTimer > 0.4) {
-                this.player.state = 'idle'; // End attack
-            } else {
-                if (this.player.isGrounded) dx = 0; // Lock horizontal input on ground
-            }
-        } else if (this.player.state === 'hit') {
-            if (this.player.animationTimer > 0.4) {
+            const maxDuration = (this.player.comboVariant === 3 && this.player.comboStep === 4) ? 0.6 : 0.45;
+            if (this.player.animationTimer > maxDuration) {
                 this.player.state = 'idle';
+                this.player.comboVariant = undefined;
+                this.player.comboStep = undefined;
             } else {
-                dx = 0; // Stunned
+                if (this.player.isGrounded) dx = 0; // Lock horizontal move during attack
+            }
+        } else if (this.player.state === 'hit' || (this.player.hitStunTimer && this.player.hitStunTimer > 0)) {
+            // Updated Player Hit Stun Logic - Quick Recovery
+            if (this.player.hitStunTimer && this.player.hitStunTimer > 0) {
+                this.player.hitStunTimer -= dt;
+
+                // Quick Recovery Window: After first 0.2s of stun, player can break out by moving/jumping
+                if (this.player.hitStunTimer < (this.player.hitStunDuration! - 0.2)) {
+                    if (dx !== 0 || isJustPressed(' ') || isJustPressed('w') || isJustPressed('arrowup')) {
+                        this.player.hitStunTimer = 0;
+                        this.player.state = 'idle';
+                        // Recovery burst
+                        this.spawnDust(this.player.x + this.player.width / 2, this.player.y + this.player.height / 2, 5, '#bae6fd');
+                    } else {
+                        dx = 0; // Still stunned if no input
+                    }
+                } else {
+                    dx = 0; // Hard stun phase
+                }
+            }
+            if ((!this.player.hitStunTimer || this.player.hitStunTimer <= 0) && this.player.state === 'hit') {
+                this.player.state = 'idle';
             }
         }
 
@@ -1185,18 +1267,30 @@ export class GameRunner {
             this.player.velocityY += gravity * dt;
         }
 
-        // ─── Grass Rustle Detection ───
-        if (this.onGrassRustle) {
+        // ─── Grass Rustle Detection (player + enemies) ───
+        // Only trigger rustle when the unit is actually moving, not standing still
+        {
             const px = this.player.x;
             const py = this.player.y;
             const pw = this.player.width;
             const ph = this.player.height;
+            const playerMoving = Math.abs(this.player.velocityX) > 10;
             // [OPTIMIZATION] Use already culled physics tile list
             for (let i = 0; i < tileRects.length; i++) {
                 const tr = tileRects[i];
                 if (tr.tile.spriteId === 'grass') {
-                    if (px < tr.x + tr.width && px + pw > tr.x && py < tr.y + tr.height && py + ph > tr.y) {
-                        this.onGrassRustle!(tr.tile.id);
+                    // Player overlap — only if actually walking/running
+                    if (playerMoving && px < tr.x + tr.width && px + pw > tr.x && py < tr.y + tr.height && py + ph > tr.y) {
+                        this.grassRustling.set(tr.tile.id, 0.5);
+                        if (this.onGrassRustle) this.onGrassRustle(tr.tile.id);
+                    }
+                    // Enemy overlap — only if actually moving horizontally
+                    for (const enemy of this.enemies) {
+                        if (enemy.dead) continue;
+                        if (Math.abs(enemy.velocityX) > 10 && enemy.x < tr.x + tr.width && enemy.x + enemy.width > tr.x &&
+                            enemy.y < tr.y + tr.height && enemy.y + enemy.height > tr.y) {
+                            this.grassRustling.set(tr.tile.id, 0.5);
+                        }
                     }
                 }
             }
@@ -1729,7 +1823,7 @@ export class GameRunner {
         this.previousKeys = new Set(this.keys);
     }
 
-    private checkMeleeHitbox(width: number, height: number, damage: number, offsetX: number = 0, offsetY: number = 0, isFinalHit: boolean = false) {
+    private checkMeleeHitbox(width: number, height: number, damage: number, offsetX: number = 0, offsetY: number = 0, isFinalHit: boolean = false, stunIntensity: 'light' | 'medium' | 'heavy' = 'light') {
         if (!this.player) return;
 
         const dirMulti = this.player.facingRight ? 1 : -1;
@@ -1742,49 +1836,76 @@ export class GameRunner {
             height: height
         };
 
+        let hitAny = false;
+
         // Check enemies
         this.enemies.forEach(enemy => {
             if (enemy.dead) return;
             if (hitbox.x < enemy.x + enemy.width && hitbox.x + hitbox.width > enemy.x &&
                 hitbox.y < enemy.y + enemy.height && hitbox.y + hitbox.height > enemy.y) {
                 // Hit!
+                hitAny = true;
                 enemy.hp -= damage;
                 enemy.state = 'hit';
                 enemy.animationTimer = 0;
-                this.spawnDust(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2, 8, '#ef4444');
 
-                if (isFinalHit) {
+                // Advanced Hit Stun System
+                let stunTime = 0.3;
+                if (stunIntensity === 'medium') stunTime = 0.5;
+                if (stunIntensity === 'heavy') stunTime = 0.8;
+
+                enemy.hitStunTimer = stunTime;
+                enemy.hitStunDuration = stunTime;
+                enemy.hitIntensity = stunIntensity;
+
+                // VFX
+                const sparks = stunIntensity === 'heavy' ? 12 : (stunIntensity === 'medium' ? 8 : 4);
+                const color = stunIntensity === 'heavy' ? '#b91c1c' : '#ef4444';
+                this.spawnDust(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2, sparks, color);
+
+                if (isFinalHit || stunIntensity === 'heavy') {
                     this.screenShakeTimer = 0.4;
                     this.screenShakeIntensity = 15;
+                    // Heavy hit pushes enemy right away
+                    enemy.velocityX = this.player!.facingRight ? 250 : -250;
+                    enemy.velocityY = -150;
                 } else {
                     this.screenShakeTimer = 0.1;
                     this.screenShakeIntensity = 4;
+                    // Light hits will push slightly, but mainly they freeze
+                    enemy.velocityX = this.player!.facingRight ? 50 : -50;
+                    enemy.velocityY = 0;
                 }
-
-                // Knockback
-                enemy.velocityX = this.player!.facingRight ? 150 : -150;
-                enemy.velocityY = -100;
 
                 if (enemy.hp <= 0) {
                     enemy.dead = true;
                     this.player!.exp += enemy.exp;
                     this.emitStats();
-                    for (let i = 0; i < 15; i++) {
+                    for (let i = 0; i < 20; i++) {
                         this.spawnParticle({
                             x: enemy.x + enemy.width / 2,
                             y: enemy.y + enemy.height / 2,
-                            vx: (Math.random() - 0.5) * 300,
-                            vy: (Math.random() - 0.5) * 300,
+                            vx: (Math.random() - 0.5) * 400,
+                            vy: (Math.random() - 0.5) * 400,
                             life: 0.5 + Math.random() * 0.5,
-                            color: '#ef4444',
-                            size: 4 + Math.random() * 4
+                            color: '#b91c1c',
+                            size: 4 + Math.random() * 6
                         });
                     }
-                    this.screenShakeTimer = 0.2;
-                    this.screenShakeIntensity = 8;
+                    this.screenShakeTimer = 0.3;
+                    this.screenShakeIntensity = 10;
                 }
             }
         });
+
+        // Hit stop on heavy hits (freeze game slightly)
+        if (hitAny && (stunIntensity === 'heavy' || isFinalHit)) {
+            // A simple implementation of hit-stop without massive engine rewrite:
+            // Just delay the next animation frame slightly, or we can use a sleep if we had one.
+            // Since we can't block the JS thread safely, we'll trigger a massive screen shake instead.
+            this.screenShakeTimer = Math.max(this.screenShakeTimer, 0.4);
+            this.screenShakeIntensity = Math.max(this.screenShakeIntensity, 15);
+        }
     }
 
     private updateEnemies(dt: number) {
@@ -1820,119 +1941,153 @@ export class GameRunner {
                 enemy.velocityY += this.physicsSettings.gravity * dt;
             }
 
-            if (enemy.state !== 'hit') {
-                const distToPlayer = Math.hypot(this.player!.x - enemy.x, this.player!.y - enemy.y);
-                const isShooter = enemy.enemyType === 'shooter';
-                const isTank = enemy.enemyType === 'tank';
-                const isAssassin = enemy.enemyType === 'assassin';
-                const isFlyer = enemy.enemyType === 'flyer';
-
-                let attackRange = 40;
-                if (isShooter) attackRange = 300;
-                if (isTank) attackRange = 60;
-                if (isAssassin) attackRange = 50;
-
-                if (distToPlayer < attackRange && (enemy.attackCooldown || 0) <= 0) {
-                    enemy.state = 'attack1';
+            if (enemy.state === 'hit' || (enemy.hitStunTimer && enemy.hitStunTimer > 0)) {
+                // Enemy is frozen in hit stun
+                if (enemy.hitStunTimer && enemy.hitStunTimer > 0) {
+                    enemy.hitStunTimer -= dt;
+                    // Freeze velocity completely while in stun except for heavy knockbacks which overrides
+                    if (enemy.hitIntensity !== 'heavy') {
+                        enemy.velocityX = 0;
+                        enemy.velocityY = 0;
+                    }
+                } else {
+                    // Stun is over
+                    enemy.state = 'idle';
                     enemy.animationTimer = 0;
+                    enemy.hitStunTimer = 0;
+                    enemy.hitStunDuration = 0;
+                }
 
-                    if (isShooter) enemy.attackCooldown = 2.5;
-                    else if (isTank) enemy.attackCooldown = 3.0;
-                    else if (isAssassin) enemy.attackCooldown = 0.8;
-                    else enemy.attackCooldown = 1.5;
+                // Keep resolving physics so they don't fall through floor if knocked back heavily
+                enemy.x += enemy.velocityX * dt;
+                const colliderX = { x: enemy.x, y: enemy.y, width: enemy.width, height: enemy.height };
+                if (this.physics.checkCollision(colliderX, this.cachedTileRects) || this.physics.checkCollisionShapes(colliderX, this.collisionShapes)) {
+                    enemy.x -= enemy.velocityX * dt;
+                }
+                enemy.y += enemy.velocityY * dt;
+                const colliderY = { x: enemy.x, y: enemy.y, width: enemy.width, height: enemy.height };
+                if (this.physics.checkCollision(colliderY, this.cachedTileRects) || this.physics.checkCollisionShapes(colliderY, this.collisionShapes)) {
+                    enemy.y -= enemy.velocityY * dt;
+                    if (enemy.velocityY > 0) enemy.isGrounded = true;
+                    enemy.velocityY = 0;
+                } else {
+                    enemy.isGrounded = false;
+                }
+                return; // Skip AI completely
+            }
 
-                    enemy.facingRight = this.player!.x > enemy.x;
-                    enemy.velocityX = 0;
-                    if (isFlyer) enemy.velocityY = 0;
+            const distToPlayer = Math.hypot(this.player!.x - enemy.x, this.player!.y - enemy.y);
+            // ... AI Logic Continues ...
+            const isShooter = enemy.enemyType === 'shooter';
+            const isTank = enemy.enemyType === 'tank';
+            const isAssassin = enemy.enemyType === 'assassin';
+            const isFlyer = enemy.enemyType === 'flyer';
 
-                    if (isShooter) {
-                        setTimeout(() => {
-                            if (enemy.dead) return;
-                            const dirX = this.player!.x - enemy.x;
-                            const dirY = this.player!.y - enemy.y;
-                            const mag = Math.hypot(dirX, dirY);
-                            this.enemyProjectiles.push({
-                                x: enemy.x + enemy.width / 2,
-                                y: enemy.y + enemy.height / 2,
-                                vx: (dirX / mag) * 200,
-                                vy: (dirY / mag) * 200,
-                                width: 8, height: 8,
-                                damage: 15,
-                                color: '#f59e0b', // amber
-                                life: 3,
-                                shape: 'circle'
-                            });
-                        }, 300);
-                    } else if (isTank) {
-                        setTimeout(() => {
-                            if (enemy.dead) return;
-                            // Huge shockwave hit
-                            const hitX = enemy.facingRight ? enemy.x + enemy.width : enemy.x - 40;
-                            if (hitX < this.player!.x + this.player!.width && hitX + 40 > this.player!.x &&
-                                enemy.y - 20 < this.player!.y + this.player!.height && enemy.y + enemy.height + 20 > this.player!.y) {
-                                this.hitPlayer(25);
-                            }
-                            this.screenShakeTimer = 0.2;
-                            this.screenShakeIntensity = 8;
-                        }, 600);
-                    } else if (isFlyer) {
-                        // Swoop
-                        enemy.velocityX = enemy.facingRight ? 150 : -150;
-                        enemy.velocityY = 100;
-                        setTimeout(() => {
-                            if (enemy.dead) return;
-                            if (Math.hypot(this.player!.x - enemy.x, this.player!.y - enemy.y) < 40) {
-                                this.hitPlayer(10);
-                            }
-                        }, 200);
-                    } else {
-                        // Melee & Assassin
-                        setTimeout(() => {
-                            if (enemy.dead) return;
-                            const hitX = enemy.facingRight ? enemy.x + enemy.width : enemy.x - 20;
-                            if (hitX < this.player!.x + this.player!.width && hitX + 20 > this.player!.x &&
-                                enemy.y < this.player!.y + this.player!.height && enemy.y + enemy.height > this.player!.y) {
-                                this.hitPlayer(isAssassin ? 15 : 10);
-                            }
-                        }, isAssassin ? 100 : 200);
-                    }
-                } else if (!['attack1', 'attack2', 'attack3'].includes(enemy.state)) {
-                    let targetVx = 0;
-                    let targetVy = 0;
+            let attackRange = 40;
+            if (isShooter) attackRange = 300;
+            if (isTank) attackRange = 60;
+            if (isAssassin) attackRange = 50;
 
-                    let moveSpeed = 40;
-                    if (isTank) moveSpeed = 20;
-                    if (isAssassin) moveSpeed = 150;
-                    if (isFlyer) moveSpeed = 100;
+            if (distToPlayer < attackRange && (enemy.attackCooldown || 0) <= 0) {
+                enemy.state = 'attack1';
+                enemy.animationTimer = 0;
 
-                    if (enemy.enemyBehavior === 'follow' && distToPlayer < (isFlyer ? 500 : 400) && distToPlayer > attackRange - 10) {
-                        targetVx = this.player!.x > enemy.x ? moveSpeed : -moveSpeed;
-                        if (isFlyer) {
-                            targetVy = this.player!.y > enemy.y ? moveSpeed : -moveSpeed;
+                if (isShooter) enemy.attackCooldown = 2.5;
+                else if (isTank) enemy.attackCooldown = 3.0;
+                else if (isAssassin) enemy.attackCooldown = 0.8;
+                else enemy.attackCooldown = 1.5;
+
+                enemy.facingRight = this.player!.x > enemy.x;
+                enemy.velocityX = 0;
+                if (isFlyer) enemy.velocityY = 0;
+
+                if (isShooter) {
+                    setTimeout(() => {
+                        if (enemy.dead) return;
+                        const dirX = this.player!.x - enemy.x;
+                        const dirY = this.player!.y - enemy.y;
+                        const mag = Math.hypot(dirX, dirY);
+                        this.enemyProjectiles.push({
+                            x: enemy.x + enemy.width / 2,
+                            y: enemy.y + enemy.height / 2,
+                            vx: (dirX / mag) * 200,
+                            vy: (dirY / mag) * 200,
+                            width: 8, height: 8,
+                            damage: 15,
+                            color: '#f59e0b', // amber
+                            life: 3,
+                            shape: 'circle'
+                        });
+                    }, 300);
+                } else if (isTank) {
+                    setTimeout(() => {
+                        if (enemy.dead || enemy.state === 'hit') return;
+                        // Huge shockwave hit
+                        const hitX = enemy.facingRight ? enemy.x + enemy.width : enemy.x - 40;
+                        if (hitX < this.player!.x + this.player!.width && hitX + 40 > this.player!.x &&
+                            enemy.y - 20 < this.player!.y + this.player!.height && enemy.y + enemy.height + 20 > this.player!.y) {
+                            this.hitPlayer(25);
                         }
-                        enemy.facingRight = targetVx > 0;
-                        enemy.state = 'walk';
-                    } else if (enemy.enemyBehavior === 'pingpong') {
-                        if (enemy.startX === undefined) enemy.startX = enemy.x;
-                        const patrolDist = 100;
-                        targetVx = enemy.facingRight ? moveSpeed : -moveSpeed;
-                        if (enemy.facingRight && enemy.x > enemy.startX + patrolDist) enemy.facingRight = false;
-                        if (!enemy.facingRight && enemy.x < enemy.startX - patrolDist) enemy.facingRight = true;
-                        enemy.state = 'walk';
-                    } else {
-                        enemy.state = 'idle';
-                    }
+                        this.screenShakeTimer = 0.2;
+                        this.screenShakeIntensity = 8;
+                    }, 600);
+                } else if (isFlyer) {
+                    // Swoop
+                    enemy.velocityX = enemy.facingRight ? 150 : -150;
+                    enemy.velocityY = 100;
+                    setTimeout(() => {
+                        if (enemy.dead || enemy.state === 'hit') return;
+                        if (Math.hypot(this.player!.x - enemy.x, this.player!.y - enemy.y) < 40) {
+                            this.hitPlayer(10);
+                        }
+                    }, 200);
+                } else {
+                    // Melee & Assassin
+                    setTimeout(() => {
+                        if (enemy.dead || enemy.state === 'hit') return;
+                        const hitX = enemy.facingRight ? enemy.x + enemy.width : enemy.x - 20;
+                        if (hitX < this.player!.x + this.player!.width && hitX + 20 > this.player!.x &&
+                            enemy.y < this.player!.y + this.player!.height && enemy.y + enemy.height > this.player!.y) {
+                            this.hitPlayer(isAssassin ? 15 : 10);
+                        }
+                    }, isAssassin ? 100 : 200);
+                }
+            } else if (!['attack1', 'attack2', 'attack3'].includes(enemy.state)) {
+                let targetVx = 0;
+                let targetVy = 0;
 
+                let moveSpeed = 40;
+                if (isTank) moveSpeed = 20;
+                if (isAssassin) moveSpeed = 150;
+                if (isFlyer) moveSpeed = 100;
+
+                if (enemy.enemyBehavior === 'follow' && distToPlayer < (isFlyer ? 500 : 400) && distToPlayer > attackRange - 10) {
+                    targetVx = this.player!.x > enemy.x ? moveSpeed : -moveSpeed;
                     if (isFlyer) {
-                        // Smoothly transition velocity for flyers
-                        enemy.velocityX += (targetVx - enemy.velocityX) * dt * 2;
-                        enemy.velocityY += (targetVy - enemy.velocityY) * dt * 2;
-                    } else {
-                        enemy.velocityX = targetVx;
+                        targetVy = this.player!.y > enemy.y ? moveSpeed : -moveSpeed;
                     }
+                    enemy.facingRight = targetVx > 0;
+                    enemy.state = 'walk';
+                } else if (enemy.enemyBehavior === 'pingpong') {
+                    if (enemy.startX === undefined) enemy.startX = enemy.x;
+                    const patrolDist = 100;
+                    targetVx = enemy.facingRight ? moveSpeed : -moveSpeed;
+                    if (enemy.facingRight && enemy.x > enemy.startX + patrolDist) enemy.facingRight = false;
+                    if (!enemy.facingRight && enemy.x < enemy.startX - patrolDist) enemy.facingRight = true;
+                    enemy.state = 'walk';
+                } else {
+                    enemy.state = 'idle';
+                }
+
+                if (isFlyer) {
+                    // Smoothly transition velocity for flyers
+                    enemy.velocityX += (targetVx - enemy.velocityX) * dt * 2;
+                    enemy.velocityY += (targetVy - enemy.velocityY) * dt * 2;
+                } else {
+                    enemy.velocityX = targetVx;
                 }
             } else {
-                if (enemy.animationTimer > 0.3) {
+                if (enemy.animationTimer > (isTank ? 0.8 : 0.3)) { // Longer attack anim for tank
                     enemy.state = 'idle';
                     enemy.animationTimer = 0;
                 }
@@ -1969,13 +2124,38 @@ export class GameRunner {
     }
 
     private hitPlayer(damage: number) {
-        if (!this.player || this.player.state === 'hit') return;
+        if (!this.player || this.player.state === 'hit' || (this.player.hitStunTimer && this.player.hitStunTimer > 0)) return;
         this.player.hp -= damage;
         this.player.state = 'hit';
         this.player.animationTimer = 0;
-        this.screenShakeTimer = 0.2;
-        this.screenShakeIntensity = 5;
+
+        // Player Hit Stun 
+        this.player.hitStunTimer = 0.6; // Base 0.6s stun
+        this.player.hitStunDuration = 0.6;
+        this.player.comboVariant = undefined;
+        this.player.comboStep = undefined;
+
+        this.screenShakeTimer = 0.3;
+        this.screenShakeIntensity = 8;
         this.emitStats();
+
+        // Knockback
+        this.player.velocityX = this.player.facingRight ? -100 : 100;
+        this.player.velocityY = -100;
+
+        // Big blood splash
+        for (let i = 0; i < 8; i++) {
+            this.spawnParticle({
+                x: this.player.x + this.player.width / 2,
+                y: this.player.y + this.player.height / 2,
+                vx: (Math.random() - 0.5) * 200,
+                vy: (Math.random() - 0.5) * -200,
+                life: 0.3 + Math.random() * 0.3,
+                color: '#ef4444',
+                size: 3 + Math.random() * 5
+            });
+        }
+
         if (this.player.hp <= 0) {
             this.triggerGameOver();
         }
@@ -2331,6 +2511,7 @@ export class GameRunner {
                         : undefined;
                     TileSpriteCache.drawSvgTile(this.ctx, x, y, this.gridSize, tile.spriteId, currentTime, {
                         isSurface,
+                        isRustling: this.grassRustling.has(tile.id),
                         opacity: tile.opacity,
                         rotation: tile.rotation,
                         scaleX: tile.scaleX,
@@ -2519,6 +2700,11 @@ export class GameRunner {
                 DefaultCharacter.render(this.ctx, this.player);
             }
         }
+
+        // Draw Remote Players
+        this.remotePlayers.forEach(rp => {
+            DefaultCharacter.render(this.ctx, rp);
+        });
 
         // --- Render Particles ---
         this.particles.forEach(p => {
