@@ -220,6 +220,7 @@ export default defineConfig({
   base: './',
   server: {
     host: true, // Expose server to the local network
+    allowedHosts: true, // Allow localtunnel to access the dev server
     proxy: {
       // Proxy /peerjs to the local PeerServer running on port 9000.
       // This means clients can reach the signaling server on the same
