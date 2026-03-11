@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { PeerServer } from 'peer'
 import dgram from 'dgram'
+import localtunnel from 'localtunnel'
 // @ts-ignore
 import ip from 'ip'
 
@@ -19,6 +20,7 @@ function peerServerPlugin() {
       let activeSession: any = null;
       // Map to store discovered hosts: hostId -> { ...sessionInfo, lastSeen: timestamp }
       const discoveredHosts = new Map<string, any>();
+      let activeTunnel: localtunnel.Tunnel | null = null;
 
       // Clean up stale hosts (not seen in 10s)
       setInterval(() => {
@@ -140,6 +142,40 @@ function peerServerPlugin() {
           res.setHeader('Content-Type', 'application/json');
           // Return list of discovered hosts as an array
           res.end(JSON.stringify({ hosts: Array.from(discoveredHosts.values()) }));
+          return;
+        }
+
+        // Handle Localtunnel (Internet Hosting)
+        if (req.url === '/api/tunnel/start' && req.method === 'POST') {
+          if (activeTunnel) {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: true, url: activeTunnel.url }));
+            return;
+          }
+          try {
+            // Tunnel port 5173 (which Vite runs on, and proxies /peerjs to 9000)
+            const tunnel = await localtunnel({ port: 5173 });
+            activeTunnel = tunnel;
+            tunnel.on('close', () => {
+              activeTunnel = null;
+            });
+            console.log(`[Internet] Tunnel established at ${tunnel.url}`);
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: true, url: tunnel.url }));
+          } catch (e) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ success: false, error: String(e) }));
+          }
+          return;
+        }
+
+        if (req.url === '/api/tunnel/stop' && req.method === 'POST') {
+          if (activeTunnel) {
+            activeTunnel.close();
+            activeTunnel = null;
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: true }));
           return;
         }
 

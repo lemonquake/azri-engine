@@ -17,17 +17,18 @@ As a host, your job is to load the map and open your game to other players. Foll
 2. **Open the Lobby:** Click the **[LOBBY]** button located in the left sidebar of the editor.
 3. **Select Map:** Click on **"HOST A GAME"**, then choose a map from your saved levels or import one.
 4. **Host the Game:** Click **"HOST GAME"**. The game will generate a unique, alphanumeric **Host ID**.
-5. **Share the ID:** Share your specific **Host ID** (e.g., `azrix7k2qf`) with your friends.
-6. **Wait for Players:** As players join, you will see their connection status update in the lobby UI.
-7. **Start:** Once everyone is connected and ready, click **"START GAME"**.
+5. **(Optional) Expose to Internet:** If your friends are not on the same local network, click **"EXPOSE TO INTERNET"**. This generates a **Public Web Link** (e.g., `https://random-url.loca.lt`) that your friends can use to directly open the game.
+6. **Share the Info:** Share your specific **Host ID** (e.g., `azrix7k2qf`). If playing over the internet, also share the **Public Web Link**.
+7. **Wait for Players:** As players join, you will see their connection status update in the lobby UI.
+8. **Start:** Once everyone is connected and ready, click **"START GAME"**.
 
 ### 🤝 How to Join
 
-As a joiner, you connect directly to a host using their IP and Host ID.
+As a joiner, you connect directly to a host using their IP and Host ID, or by opening their **Public Web Link**.
 
-1. **Get the Info:** Ask the host for their active **Invite Code (Host ID)** and their **LAN IP Address**.
-2. **Start the Engine:** Run `Open Game.cmd` and open `http://localhost:5173`.
-3. **Load the Map:** Ensure you have the exact same level/map loaded in your editor as the host.
+1. **Ask your friend for their invite info:** You need their **Host ID**. If you are on the internet, you also need their **Public Web Link**.
+2. **Start the Engine:** If you are on the internet, just open the **Public Web Link** in your browser. If you are on LAN, run `Open Game.cmd` and open `http://localhost:5173`.
+3. **Load the Map:** Ensure you have the exact same level/map loaded in your editor as the host. The game will attempt to sync the map over the connection.
 4. **Open the Lobby:** Click the **[LOBBY]** button in the left sidebar.
 5. **Join the Game:** Click on **"JOIN A GAME"**.
 6. **Enter ID:** Enter the ID in the format `IP_ADDRESS::HOST_ID`. (e.g. `192.168.1.5::azri123`). If you are playing locally on the same PC, just enter the `HOST_ID`.
@@ -46,9 +47,10 @@ Host games on the same network will now automatically broadcast their presence. 
 ### Over the Internet (WAN)
 If you are playing with friends over the internet, the PeerJS networking connection must be able to establish a link.
 
-In most cases, PeerJS broker servers will seamlessly connect two players without issue via WebRTC. However, if connections are failing or timing out:
-1. **Port Forwarding:** The host may need to check their router settings to ensure their firewall is not blocking P2P traffic. Commonly, configuring port forwarding for WebRTC or explicitly opening up the application's required ports (default `9000` or the one configured in your setup) can help.
-2. **Dedicated Host Mode (Optional):** If implemented or supported, running the engine in a headless/dedicated host mode on a Virtual Private Server (VPS) allows players to connect to a stable, centralized IP address instead of relying solely on the host player's residential connection.
+By using the **"EXPOSE TO INTERNET"** button in the lobby, the host's game frontend is tunneled to the web using `localtunnel`. This bypasses port forwarding and allows friends to join by simply clicking the provided URL.
+
+1. **Signaling Server Tunneling:** Because the built-in PeerServer is proxied through the same port as the UI, friends loading the **Public Web Link** will seamlessly connect to the host's signaling server!
+2. **NAT Traversal:** The connection between peers uses public Google STUN servers for WebRTC. In rare cases where strict NATs prevent direct connections and STUN fails, connections might drop.
 
 ---
 

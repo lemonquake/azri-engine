@@ -36,6 +36,10 @@ export function MultiplayerLobbyModal() {
     const [lanHosts, setLanHosts] = useState<LANHost[]>([]);
     const [statusText, setStatusText] = useState('');
     const [isConnecting, setIsConnecting] = useState(false);
+    
+    // Internet Hosting
+    const [internetUrl, setInternetUrl] = useState<string | null>(null);
+    const [isExposingUrl, setIsExposingUrl] = useState(false);
 
     // Save username
     useEffect(() => {
@@ -57,6 +61,8 @@ export function MultiplayerLobbyModal() {
                 // Actually the existing GameRunner initializes NetworkManager on transition.
                 // Let's stick to that: Lobby just sets up Host ID and lets GameRunner take over.
             }
+            // We do not stop the tunnel here automatically, as the game runner might still need it.
+            // Ideally, the tunnel persists as long as the dev server is running, or is stopped manually.
         };
     }, []);
 
@@ -233,6 +239,26 @@ export function MultiplayerLobbyModal() {
         }, 500);
     };
 
+    const handleExposeInternet = async () => {
+        setIsExposingUrl(true);
+        try {
+            const res = await fetch('/api/tunnel/start', { method: 'POST' });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.success && data.url) {
+                    setInternetUrl(data.url);
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        // Include the host ID so the friend can just append it, or we can just send the base URL
+                        navigator.clipboard.writeText(data.url).catch(() => {});
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('Failed to start tunnel:', e);
+        }
+        setIsExposingUrl(false);
+    };
+
     // Derived states
     const isHosting = !!(activeTab === 'host' && hostId);
     const isWaitingJoin = !!(activeTab === 'join' && hostId && players.length > 0);
@@ -392,7 +418,26 @@ export function MultiplayerLobbyModal() {
                             <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-lg p-5 flex flex-col items-center justify-center text-center">
                                 <span className="text-xs font-semibold text-indigo-400 uppercase tracking-widest mb-1">Invite Code</span>
                                 <h1 className="text-4xl font-black text-white font-mono tracking-wider">{hostId}</h1>
-                                <p className="text-xs text-zinc-400 mt-2">Copied to clipboard. Share this with friends!</p>
+                                
+                                {!internetUrl ? (
+                                    <button 
+                                        onClick={handleExposeInternet} 
+                                        disabled={isExposingUrl}
+                                        className="mt-3 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded text-sm text-white font-semibold transition-colors flex items-center gap-2"
+                                    >
+                                        {isExposingUrl ? <Loader2 size={14} className="animate-spin" /> : <Server size={14} />}
+                                        EXPOSE TO INTERNET
+                                    </button>
+                                ) : (
+                                    <div className="mt-4 p-3 bg-zinc-950 border border-emerald-500/30 rounded-lg w-full">
+                                        <span className="text-xs text-emerald-400 uppercase font-semibold block mb-1">Public Web Link (Copied)</span>
+                                        <div className="text-sm font-mono text-zinc-300 break-all select-all text-left">
+                                            {internetUrl}
+                                        </div>
+                                    </div>
+                                )}
+                                
+                                <p className="text-xs text-zinc-500 mt-4">For local network, share ID. For internet, expose and share the link + ID.</p>
                             </div>
                         ) : (
                             <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-5 flex flex-col items-center justify-center text-center">
