@@ -149,7 +149,12 @@ function peerServerPlugin() {
         if (req.url === '/api/tunnel/start' && req.method === 'POST') {
           if (activeTunnel) {
             res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: true, url: activeTunnel.url }));
+            let password = '';
+            try {
+              const pwdRes = await fetch('https://loca.lt/mytunnelpassword');
+              password = (await pwdRes.text()).trim();
+            } catch (e) { console.error('Failed to get tunnel password', e); }
+            res.end(JSON.stringify({ success: true, url: activeTunnel.url, password }));
             return;
           }
           try {
@@ -160,8 +165,15 @@ function peerServerPlugin() {
               activeTunnel = null;
             });
             console.log(`[Internet] Tunnel established at ${tunnel.url}`);
+            
+            let password = '';
+            try {
+              const pwdRes = await fetch('https://loca.lt/mytunnelpassword');
+              password = (await pwdRes.text()).trim();
+            } catch (e) { console.error('Failed to get tunnel password', e); }
+
             res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: true, url: tunnel.url }));
+            res.end(JSON.stringify({ success: true, url: tunnel.url, password }));
           } catch (e) {
             res.statusCode = 500;
             res.end(JSON.stringify({ success: false, error: String(e) }));

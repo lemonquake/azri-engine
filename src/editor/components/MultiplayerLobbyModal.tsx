@@ -39,6 +39,7 @@ export function MultiplayerLobbyModal() {
     
     // Internet Hosting
     const [internetUrl, setInternetUrl] = useState<string | null>(null);
+    const [tunnelPassword, setTunnelPassword] = useState<string | null>(null);
     const [isExposingUrl, setIsExposingUrl] = useState(false);
 
     // Save username
@@ -247,9 +248,11 @@ export function MultiplayerLobbyModal() {
                 const data = await res.json();
                 if (data.success && data.url) {
                     setInternetUrl(data.url);
+                    if (data.password) setTunnelPassword(data.password);
                     if (navigator.clipboard && navigator.clipboard.writeText) {
-                        // Include the host ID so the friend can just append it, or we can just send the base URL
-                        navigator.clipboard.writeText(data.url).catch(() => {});
+                        let text = `Play game at: ${data.url}\nInvite Code: ${hostId}`;
+                        if (data.password) text += `\nTunnel Password: ${data.password}`;
+                        navigator.clipboard.writeText(text).catch(() => {});
                     }
                 }
             }
@@ -429,11 +432,21 @@ export function MultiplayerLobbyModal() {
                                         EXPOSE TO INTERNET
                                     </button>
                                 ) : (
-                                    <div className="mt-4 p-3 bg-zinc-950 border border-emerald-500/30 rounded-lg w-full">
-                                        <span className="text-xs text-emerald-400 uppercase font-semibold block mb-1">Public Web Link (Copied)</span>
-                                        <div className="text-sm font-mono text-zinc-300 break-all select-all text-left">
-                                            {internetUrl}
+                                    <div className="mt-4 p-3 bg-zinc-950 border border-emerald-500/30 rounded-lg w-full flex flex-col gap-2">
+                                        <div>
+                                            <span className="text-[10px] text-emerald-400 uppercase font-semibold block mb-0.5">Public Web Link (Copied)</span>
+                                            <div className="text-sm font-mono text-zinc-300 break-all select-all text-left bg-black/50 p-1.5 rounded">
+                                                {internetUrl}
+                                            </div>
                                         </div>
+                                        {tunnelPassword && (
+                                            <div>
+                                                <span className="text-[10px] text-emerald-400 uppercase font-semibold block mb-0.5">Tunnel Password</span>
+                                                <div className="text-sm font-mono text-zinc-300 select-all text-left bg-black/50 p-1.5 rounded">
+                                                    {tunnelPassword}
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                                 
