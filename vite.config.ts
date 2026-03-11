@@ -159,7 +159,7 @@ function peerServerPlugin() {
           }
           try {
             // Tunnel port 5173 (which Vite runs on, and proxies /peerjs to 9000)
-            const tunnel = await localtunnel({ port: 5173 });
+            const tunnel = await localtunnel({ port: 5173, local_host: '127.0.0.1' });
             activeTunnel = tunnel;
             tunnel.on('close', () => {
               activeTunnel = null;
