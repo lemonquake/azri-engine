@@ -1,13 +1,13 @@
 import { useEditorStore } from '../state/editorStore';
 import { PhysicsSystem } from './PhysicsSystem';
 import type { CharacterInstance, Tile, TileDefinition, SkyboxLayer, PhysicsSettings, LevelImage, Layer } from '../types';
-import { DEFAULT_LAYER_ID, DEFAULT_TILES } from '../types';
-import { DefaultCharacter } from './DefaultCharacter';
-import { EnemyRenderer } from './EnemyRenderer';
+import { DEFAULT_TILES } from '../types';
 import type { CharacterAnimationState } from './DefaultCharacter';
 import { NetworkManager } from './NetworkManager';
 import type { NetworkMessage } from './NetworkManager';
-import { TileSpriteCache } from '../components/tiles/TileSpriteCache';
+import { PixiRenderer } from '../../engine/rendering/PixiRenderer';
+import { AnimationSystem } from './AnimationSystem';
+import Matter from 'matter-js';
 
 /** Runtime state for tiles with behaviors */
 interface TileRuntimeState {
@@ -40,17 +40,26 @@ interface TileRuntimeState {
     chaosTimer: number;
     chaosOffsetX: number;
     chaosOffsetY: number;
+
+    // Movement Delta Tracking (for accurate carrying logic)
+    lastDelta: number;
 }
 
 function createDefaultRuntimeState(tile?: Tile): TileRuntimeState {
     let initialDir: 1 | -1 = 1;
+    let initialAxis: 'horizontal' | 'vertical' = 'horizontal';
     if (tile && (tile.behavior || tile.behavior2)) {
         const behaviors = [];
         if (tile.behavior) behaviors.push(tile.behavior);
         if (tile.behavior2) behaviors.push(tile.behavior2);
         const mBehavior = behaviors.find(b => b.type === 'moving' || b.type === 'transitioning') as any;
-        if (mBehavior && mBehavior.initialDirection !== undefined) {
-            initialDir = mBehavior.initialDirection;
+        if (mBehavior) {
+            if (mBehavior.initialDirection !== undefined) {
+                initialDir = mBehavior.initialDirection;
+            }
+            if (mBehavior.axis !== undefined) {
+                initialAxis = mBehavior.axis;
+            }
         }
     }
     return {
@@ -65,13 +74,14 @@ function createDefaultRuntimeState(tile?: Tile): TileRuntimeState {
         fallOffset: 0,
         bounceCooldownTimer: 0,
         transitionGroupId: -1,
-        currentAxis: 'horizontal',
+        currentAxis: initialAxis,
         wasPlayerOnTile: false,
         transitionDelayTimer: 0,
         chaosAngle: 0,
         chaosTimer: 0,
         chaosOffsetX: 0,
         chaosOffsetY: 0,
+        lastDelta: 0,
     };
 }
 
@@ -104,15 +114,16 @@ export interface Projectile {
 }
 
 export class GameRunner {
+    private container: HTMLElement;
     private canvas: HTMLCanvasElement;
-    private ctx: CanvasRenderingContext2D;
     private isRunning: boolean = false;
     private animationFrameId: number | null = null;
     private lastTime: number = 0;
 
     private physics: PhysicsSystem;
     private player: CharacterAnimationState | null = null;
-    private playerTexture: HTMLImageElement | null = null;
+    private playerBody: Matter.Body | null = null;
+    private pixiRenderer: PixiRenderer;
 
     // Remote Players
     private remotePlayers: Map<string, CharacterAnimationState> = new Map();
@@ -128,6 +139,13 @@ export class GameRunner {
     public getGridSize() { return this.gridSize; }
     public getTiles() { return this.tiles; }
     public getLayers() { return this.layers; }
+    public getLevelImages() { return this.levelImages; }
+    public addLevelImage(image: LevelImage) {
+        this.levelImages.push(image);
+    }
+    public removeLevelImage(id: string) {
+        this.levelImages = this.levelImages.filter(img => img.id !== id);
+    }
     public onGrassRustle?: (tileId: string) => void;
     public onGameOver?: () => void; // [NEW] Game Over Callback
 
@@ -170,17 +188,38 @@ export class GameRunner {
 
     // Visual Effects
     private particles: Particle[] = [];
-    private screenShakeTimer: number = 0;
-    private screenShakeIntensity: number = 0;
+    private cameraOffset = { x: 0, y: 0 };
+    private triggerScreenShake(intensity: number) {
+        AnimationSystem.add({
+            id: 'screenShake',
+            targets: this.cameraOffset,
+            x: [
+                { value: intensity, duration: 40, easing: 'easeOutQuad' },
+                { value: -intensity, duration: 50, easing: 'easeInOutQuad' },
+                { value: 0, duration: 40, easing: 'easeOutQuad' }
+            ],
+            y: [
+                { value: -intensity, duration: 40, easing: 'easeOutQuad' },
+                { value: intensity, duration: 50, easing: 'easeInOutQuad' },
+                { value: 0, duration: 40, easing: 'easeOutQuad' }
+            ]
+        });
+    }
     private playerLastTransitionGroupId: number = -1;
 
     public onStatsChange?: (stats: { hp: number, maxHp: number, exp: number, maxExp: number, level: number, wallJumps: number, maxWallJumps: number, wallFriction: number }) => void;
 
-    constructor(canvas: HTMLCanvasElement) {
-        this.canvas = canvas;
-        this.ctx = canvas.getContext('2d')!;
-        // Optimization: Disable image smoothing for pixel art look
-        this.ctx.imageSmoothingEnabled = false;
+    constructor(container: HTMLElement) {
+        this.container = container;
+        this.canvas = document.createElement('canvas');
+        this.canvas.className = "w-full h-full block touch-none focus:outline-none bg-[#1e1e2e]";
+        this.canvas.tabIndex = 0;
+        this.canvas.oncontextmenu = (e) => e.preventDefault();
+        this.container.appendChild(this.canvas);
+        
+        // Hide native canvas because Pixi will render it via WebGL on the same canvas if initialized,
+        // Actually, PixiJS init takes the canvas and takes over its WebGL context.
+        this.pixiRenderer = new PixiRenderer();
 
         // Grab state
         const state = useEditorStore.getState();
@@ -294,22 +333,10 @@ export class GameRunner {
     }
 
     private resize() {
-        if (this.canvas.parentElement) {
+        if (this.canvas && this.canvas.parentElement) {
             this.canvas.width = this.canvas.parentElement.clientWidth;
             this.canvas.height = this.canvas.parentElement.clientHeight;
-            this.ctx.imageSmoothingEnabled = false;
         }
-    }
-
-    private getTileImage(src: string): HTMLImageElement {
-        const imageCache: { [key: string]: HTMLImageElement } = (window as any)._tileImageCache || {};
-        (window as any)._tileImageCache = imageCache;
-        if (!imageCache[src]) {
-            const img = new Image();
-            img.src = src;
-            imageCache[src] = img;
-        }
-        return imageCache[src];
     }
 
     private initPlayer(state: any) {
@@ -417,6 +444,7 @@ export class GameRunner {
             bounceCancelWindowTimer: 0
         };
 
+        this.playerBody = this.physics.createPlayerBody(startX, startY, 20, 28);
         // Notify initial stats
         this.emitStats();
     }
@@ -425,8 +453,13 @@ export class GameRunner {
         if (this.isRunning) return;
         this.isRunning = true;
         this.initTileCaches(); // Cache all tiles for performance!
+        if (this.playerBody) Matter.World.add(this.physics.world, this.playerBody);
         this.lastTime = performance.now();
-        this.loop();
+        
+        // Init PixiJS Asynchronously
+        this.pixiRenderer.init(this.canvas).then(() => {
+            this.loop();
+        });
     }
 
     public stop() {
@@ -441,6 +474,14 @@ export class GameRunner {
         if (this.networkManager) {
             this.networkManager.disconnect();
             this.networkManager = null;
+        }
+        
+        if (this.pixiRenderer) {
+            this.pixiRenderer.destroy();
+        }
+        
+        if (this.canvas && this.canvas.parentElement) {
+            this.canvas.parentElement.removeChild(this.canvas);
         }
     }
 
@@ -484,6 +525,17 @@ export class GameRunner {
         });
     }
 
+    private spawnDamageText(cx: number, cy: number, damage: number, color: string = '#ef4444') {
+        const p = {
+            x: cx, y: cy, vx: 0, vy: 0, life: 1, maxLife: 1, color: color,
+            size: 16, shape: 'text' as any, text: damage.toString(), shrink: false, id: Math.random().toString()
+        };
+        this.particles.push(p as any);
+        AnimationSystem.add({
+            id: 'dmg_' + p.id, targets: p, y: cy - 40, duration: 800, easing: 'easeOutQuint'
+        });
+    }
+
     private spawnDust(cx: number, cy: number, count: number = 5, color: string = '#d1d5db') {
         for (let i = 0; i < count; i++) {
             this.spawnParticle({
@@ -499,6 +551,27 @@ export class GameRunner {
         }
     }
 
+    private render() {
+        const shakenCamera = { x: this.camera.x + this.cameraOffset.x, y: this.camera.y + this.cameraOffset.y };
+        this.pixiRenderer.renderState(
+            shakenCamera,
+            0,
+            0,
+            this.tiles,
+            this.tileRuntime,
+            this.enemies,
+            this.player,
+            Array.from(this.remotePlayers.values()),
+            this.enemyProjectiles,
+            this.particles,
+            this.skyboxLayers,
+            this.levelImages,
+            this.collisionShapes,
+            performance.now() / 1000,
+            this.tileDefs
+        );
+    }
+
     private loop() {
         if (!this.isRunning) return;
 
@@ -507,6 +580,7 @@ export class GameRunner {
         this.lastTime = now;
 
         this.update(deltaTime);
+        AnimationSystem.update(deltaTime);
         this.render();
 
         this.animationFrameId = requestAnimationFrame(this.loop.bind(this));
@@ -521,15 +595,18 @@ export class GameRunner {
         for (const tile of this.tiles) {
             let wx = tile.gridX * this.gridSize;
             let wy = tile.gridY * this.gridSize;
-            let wWidth = this.gridSize;
-            let wHeight = this.gridSize;
+            let wWidth = this.gridSize * Math.abs(tile.scaleX || 1);
+            let wHeight = this.gridSize * Math.abs(tile.scaleY || 1);
+
+            // If it's flipped negatively, the bounding box top-left shifts
+            if ((tile.scaleX || 1) < 0) wx -= wWidth;
+            if ((tile.scaleY || 1) < 0) wy -= wHeight;
 
             if (tile.spriteId === 'text_object' && tile.text) {
-                this.ctx.save();
-                this.ctx.font = `${tile.fontSize || 32}px "${tile.fontFamily || 'sans-serif'}"`;
-                wWidth = this.ctx.measureText(tile.text).width;
-                wHeight = tile.fontSize || 32;
-                this.ctx.restore();
+                // Approximate Text Width without initializing a canvas context
+                const fontSize = tile.fontSize || 32;
+                wWidth = Math.max(32, tile.text.length * (fontSize * 0.6));
+                wHeight = fontSize;
             }
 
             const tr = { tile, x: wx, y: wy, width: wWidth, height: wHeight };
@@ -653,9 +730,7 @@ export class GameRunner {
             this.player.bounceCancelWindowTimer -= dt;
         }
 
-        if (this.screenShakeTimer > 0) {
-            this.screenShakeTimer -= dt;
-        }
+        
 
         // ─── Update Tile Behaviors ───
         this.updateTileBehaviors(dt);
@@ -753,7 +828,7 @@ export class GameRunner {
                     this.playerLastTransitionGroupId = groundRt.transitionGroupId;
 
                     const delay = transitioningBehavior.delay;
-                    this.tiles.forEach(t => {
+                    this.tiles.forEach((t: import('../types').Tile) => {
                         const tBehaviors = this.getTileBehaviors(t);
                         if (tBehaviors.some(b => b.type === 'transitioning')) {
                             const trt = this.tileRuntime.get(t.id);
@@ -897,8 +972,7 @@ export class GameRunner {
 
             // --- Apply Hitbox & VFX ---
             if (isFinalHit) {
-                this.player.scaleX = 0.5;
-                this.player.scaleY = 1.6;
+                AnimationSystem.add({ id: 'squash', targets: this.player, scaleX: [0.5, 1], scaleY: [1.6, 1], duration: 400, easing: 'easeOutElastic(1, .5)' });
                 this.spawnParticle({
                     x: this.player.facingRight ? this.player.x + this.player.width + 20 : this.player.x - 20,
                     y: this.player.y + this.player.height / 2,
@@ -906,8 +980,7 @@ export class GameRunner {
                     rotation: this.player.facingRight ? 45 : -45, shrink: true
                 });
             } else {
-                this.player.scaleX = 1.2;
-                this.player.scaleY = 0.9;
+                AnimationSystem.add({ id: 'squash', targets: this.player, scaleX: [1.2, 1], scaleY: [0.9, 1], duration: 400, easing: 'easeOutElastic(1, .5)' });
                 this.spawnParticle({
                     x: this.player.facingRight ? this.player.x + this.player.width + 10 : this.player.x - 10,
                     y: this.player.y + this.player.height / 2,
@@ -1181,12 +1254,10 @@ export class GameRunner {
                 }
 
                 // Screen shake on super jump
-                this.screenShakeTimer = 0.15;
-                this.screenShakeIntensity = 5;
+                this.triggerScreenShake(5);
 
                 // Stretch dramatically
-                this.player.scaleX = 0.5;
-                this.player.scaleY = 2.0;
+                AnimationSystem.add({ id: 'squash', targets: this.player, scaleX: [0.5, 1], scaleY: [2.0, 1], duration: 500, easing: 'easeOutElastic(1, .4)' });
 
             } else if (this.player.isGrounded && !this.player.isSlamming) {
                 // First Jump (Standard)
@@ -1196,8 +1267,7 @@ export class GameRunner {
                 this.player.jumpCount = 1;
 
                 // Visuals: Squash + Dust
-                this.player.scaleX = 0.8;
-                this.player.scaleY = 1.3;
+                AnimationSystem.add({ id: 'squash', targets: this.player, scaleX: [0.8, 1], scaleY: [1.3, 1], duration: 400, easing: 'easeOutElastic(1, .5)' });
                 this.spawnDust(this.player.x + this.player.width / 2, this.player.y + this.player.height, 5, '#e5e7eb');
             } else if (this.player.isOnWall && (this.player.wallJumpCount || 0) < 4) {
                 // Wall Jump (Max 4)
@@ -1301,11 +1371,7 @@ export class GameRunner {
         const groundBehaviorsForCarry = groundTile ? this.getTileBehaviors(groundTile) : [];
         const carryBehavior = groundBehaviorsForCarry.find(b => b.type === 'moving' || b.type === 'transitioning') as any;
 
-        if (carryBehavior && groundRt) {
-            let currentSpeed = carryBehavior.speed * groundRt.movingDirection;
-            if (carryBehavior.speedUpOnPlayer) currentSpeed *= carryBehavior.speedMultiplier || 1;
-            if (carryBehavior.slowDownOnPlayer) currentSpeed /= carryBehavior.speedMultiplier || 1;
-
+        if (carryBehavior && groundRt && groundRt.lastDelta !== undefined) {
             const axis = carryBehavior.type === 'transitioning' ? groundRt.currentAxis : carryBehavior.axis;
 
             // Only carry if NOT delayed
@@ -1316,9 +1382,9 @@ export class GameRunner {
 
             if (!isDelayed) {
                 if (axis === 'horizontal') {
-                    this.player.x += currentSpeed * dt;
+                    this.player.x += groundRt.lastDelta;
                 } else {
-                    this.player.y += currentSpeed * dt;
+                    this.player.y += groundRt.lastDelta;
                 }
             }
         }
@@ -1368,270 +1434,136 @@ export class GameRunner {
             }
         }
 
-        // ─── Physics Resolution with world rects ───
+
+        // ─── Physics Resolution with Matter.js ───
         this.player.isOnWall = false;
 
-        // Apply Velocity (X)
-        this.player.x += this.player.velocityX * dt;
-        let collider = { x: this.player.x, y: this.player.y, width: this.player.width, height: this.player.height };
+        if (this.playerBody) {
+            Matter.Body.setVelocity(this.playerBody, { x: this.player.velocityX / 60, y: this.player.velocityY / 60 });
 
-        // [NEW] Check Tiles OR Shapes
-        if (this.physics.checkCollision(collider, tileRects) || this.physics.checkCollisionShapes(collider, this.collisionShapes)) {
-            // ─── Step-Up / Slope Logic ───
-            // If we hit a wall/slope, try stepping up slightly
-            const stepHeight = 8;
-            const originalY = this.player.y;
-            let steppedUp = false;
+            Matter.Engine.update(this.physics.engine, dt * 1000);
 
-            // Check if we can step up (iterate for precision)
-            for (let i = 1; i <= stepHeight; i++) {
-                collider.y = originalY - i;
-                if (!this.physics.checkCollision(collider, tileRects) && !this.physics.checkCollisionShapes(collider, this.collisionShapes)) {
-                    this.player.y = originalY - i;
-                    steppedUp = true;
-                    break;
-                }
-            }
+            // Fetch resulting velocities and positions
+            const vel = this.playerBody.velocity;
+            
+            // Re-apply position back to GameRunner
+            this.player.x = this.playerBody.position.x - this.player.width / 2;
+            this.player.y = this.playerBody.position.y - this.player.height / 2;
 
-            if (!steppedUp) {
-                // Wall is too tall, stop horizontal movement
-                collider.y = originalY; // Reset collider for future checks if needed
+            // Check Grounded
+            const { isGrounded, groundTileRect } = this.physics.getGroundedState(this.playerBody, this.player.width, this.player.height);
+            const wasGroundedBeforePhysics = this.player.isGrounded;
+            this.player.isGrounded = isGrounded;
 
-                // ─── Precise Horizontal Binary Search ───
-                const preCollisionX = this.player.x - this.player.velocityX * dt;
-                let loX = preCollisionX;
-                let hiX = this.player.x;
-                for (let step = 0; step < 10; step++) {
-                    const midX = (loX + hiX) / 2;
-                    collider.x = midX;
-                    const collides = this.physics.checkCollision(collider, tileRects) ||
-                        this.physics.checkCollisionShapes(collider, this.collisionShapes);
-                    if (collides) {
-                        hiX = midX; // still colliding, search backward
-                    } else {
-                        loX = midX; // no collision, search deeper
-                    }
-                }
-                this.player.x = loX;
-                collider.x = this.player.x; // Restore collider state
-
-                // Wall Climb/Slide Logic
-                if (!this.player.isGrounded && !shouldCrouch && !this.player.isOverheated) {
-                    this.player.isOnWall = true;
-                    this.player.wallDirection = this.player.velocityX > 0 ? 1 : -1;
-
-                    // If pressing towards the wall, we stick/slide but build friction
-                    if ((dx > 0 && this.player.wallDirection === 1) || (dx < 0 && this.player.wallDirection === -1)) {
-                        if ((this.player.wallSlideTimer || 0) <= 0) {
-                            this.player.wallSlideTimer = 1.5; // stick for 1.5s
-                        }
-                    } else {
-                        // Not holding towards wall, cool down friction slowly
-                        this.player.wallFriction = Math.max(0, (this.player.wallFriction || 0) - 20 * dt);
-                    }
-                }
-
-                this.player.velocityX = 0;
-            }
-            // If stepped up, we accept the new Y and KEEP the X movement/velocity
-        } else {
-            // Not touching wall this frame
-            this.player.wallSlideTimer = 0;
-            this.player.wallFriction = Math.max(0, (this.player.wallFriction || 0) - 50 * dt);
-        }
-
-        // Apply Wall Slide limits & Friction Overheat
-        if (this.player.isOnWall && !this.player.isOverheated) {
-            if ((this.player.wallSlideTimer || 0) > 0) {
-                this.player.wallSlideTimer = (this.player.wallSlideTimer || 0) - dt;
-                // Braking/Sliding builds friction
-                this.player.wallFriction = Math.min(100, (this.player.wallFriction || 0) + 60 * dt);
-
-                // Cap downward velocity while sliding (slower slide = more friction)
-                if (this.player.velocityY > 0) {
-                    this.player.velocityY = Math.min(this.player.velocityY, moveSpeed * 0.2);
-                }
-
-                // Overheat Threshold Trigger
-                if (this.player.wallFriction >= 100) {
-                    this.player.isOverheated = true;
-                    this.player.isOnWall = false; // Fall off immediately
-
-                    // Visuals: Big smoke explosion due to overheat
-                    this.spawnDust(
-                        this.player.wallDirection === 1 ? this.player.x + this.player.width : this.player.x,
-                        this.player.y + this.player.height / 2,
-                        10,
-                        '#ef4444' // red dust
-                    );
-                }
-            } else {
-                // Free fall along wall - accelerate downwards
-                this.player.wallFriction = Math.max(0, (this.player.wallFriction || 0) - 10 * dt);
-            }
-
-            // Visuals: Wall sparks
-            if (this.player.velocityY > 0 && Math.random() < ((this.player.wallFriction || 0) / 100)) {
-                this.spawnParticle({
-                    x: this.player.wallDirection === 1 ? this.player.x + this.player.width : this.player.x,
-                    y: this.player.y + this.player.height,
-                    vx: -(this.player.wallDirection || 1) * (5 + Math.random() * 10),
-                    vy: -(10 + Math.random() * 20),
-                    life: 0.2 + Math.random() * 0.2,
-                    color: (this.player.wallFriction || 0) > 80 ? '#ef4444' : '#fbbf24', // Yellow to Red sparks
-                    size: 2 + Math.random() * 2
-                });
-            }
-        }
-
-        this.emitStats();
-
-        // Apply Velocity (Y)
-        this.player.y += this.player.velocityY * dt;
-        const wasGroundedBeforePhysics = this.player.isGrounded;
-        this.player.isGrounded = false;
-
-        collider.x = this.player.x;
-        collider.y = this.player.y;
-
-        const hitTileRect = this.physics.getCollidingTile(collider, tileRects);
-        // [NEW] Check shape collision
-        const hitShape = !hitTileRect && this.physics.checkCollisionShapes(collider, this.collisionShapes);
-
-        if (hitTileRect || hitShape) {
-            // Resolve Y collision — use binary search for precise surface placement
-            const preCollisionY = this.player.y - this.player.velocityY * dt;
-            let lo = preCollisionY;
-            let hi = this.player.y;
-            // Binary search: find the Y value where we just barely don't collide
-            for (let step = 0; step < 10; step++) {
-                const mid = (lo + hi) / 2;
-                collider.y = mid;
-                collider.x = this.player.x;
-                const collides = this.physics.getCollidingTile(collider, tileRects) ||
-                    this.physics.checkCollisionShapes(collider, this.collisionShapes);
-                if (collides) {
-                    hi = mid; // still colliding, search upward (or toward preCollisionY)
-                } else {
-                    lo = mid; // no collision here, search deeper toward surface
-                }
-            }
-            // lo is now the last non-colliding Y
-            this.player.y = lo;
-
-            if (this.player.velocityY > 0) {
-                // Hit floor
-                this.player.isGrounded = true;
-
-                if (!wasGroundedBeforePhysics) {
-                    // Check if it was a SLAM landing
+            // Handle Landing
+            if (isGrounded) {
+                if (!wasGroundedBeforePhysics && this.player.velocityY >= 0) {
                     if (this.player.isSlamming) {
                         this.player.isSlamming = false;
-
-                        // Bounce-Cancel Window
-                        this.player.bounceCancelWindowTimer = 0.15; // 150ms window
-
-                        // Screen Shake!
-                        this.screenShakeTimer = 0.3;
-                        this.screenShakeIntensity = 15;
-
-                        // Heavy Impact Dust & Shockwave
+                        this.player.bounceCancelWindowTimer = 0.15;
+                        this.triggerScreenShake(15);
                         this.spawnDust(this.player.x + this.player.width / 2, this.player.y + this.player.height, 20, '#cbd5e1');
-
-                        // Impact Flash Center
                         this.spawnParticle({
                             x: this.player.x + this.player.width / 2,
                             y: this.player.y + this.player.height,
-                            vx: 0,
-                            vy: 0,
-                            life: 0.15,
-                            color: '#ffffff',
-                            size: 40,
-                            shape: 'circle'
+                            vx: 0, vy: 0, life: 0.15, color: '#ffffff', size: 40, shape: 'circle'
                         });
-
-                        // Shockwave particles (left and right)
-                        for (let i = 0; i < 8; i++) {
-                            // Right wave
-                            this.spawnParticle({
-                                x: this.player.x + this.player.width,
-                                y: this.player.y + this.player.height - 2,
-                                vx: 400 + Math.random() * 300,
-                                vy: -10 - Math.random() * 30,
-                                life: 0.4,
-                                color: '#e2e8f0',
-                                size: 5 + Math.random() * 8
-                            });
-                            // Left wave
-                            this.spawnParticle({
-                                x: this.player.x,
-                                y: this.player.y + this.player.height - 2,
-                                vx: -400 - Math.random() * 300,
-                                vy: -10 - Math.random() * 30,
-                                life: 0.4,
-                                color: '#e2e8f0',
-                                size: 5 + Math.random() * 8
-                            });
-                        }
-
-                        // Flying Rock Debris!
-                        for (let i = 0; i < 12; i++) {
-                            this.spawnParticle({
-                                x: this.player.x + this.player.width / 2 + (Math.random() - 0.5) * 20,
-                                y: this.player.y + this.player.height,
-                                vx: (Math.random() - 0.5) * 300,
-                                vy: -200 - Math.random() * 400, // blast upward
-                                life: 0.5 + Math.random() * 0.5,
-                                color: '#475569', // Dark rock fragments
-                                size: 4 + Math.random() * 6,
-                                shape: 'square'
-                            });
-                        }
-
-                        this.player.scaleX = 1.8; // Huge squash
-                        this.player.scaleY = 0.4;
+                        AnimationSystem.add({ id: 'squash', targets: this.player, scaleX: [1.8, 1], scaleY: [0.4, 1], duration: 600, easing: 'easeOutElastic(1, .3)' });
                     } else {
-                        // Regular Landing Landing Smoke & Squash Effect
                         this.spawnDust(this.player.x + this.player.width / 2, this.player.y + this.player.height, 6, '#cbd5e1');
-                        this.player.scaleX = 1.3;
-                        this.player.scaleY = 0.8;
+                        AnimationSystem.add({ id: 'squash', targets: this.player, scaleX: [1.3, 1], scaleY: [0.8, 1], duration: 400, easing: 'easeOutElastic(1, .5)' });
                     }
                 }
+                
+                // Bonk ceiling
+                if (this.player.velocityY < 0 && vel.y > -1) {
+                    this.player.velocityY = 0; // Bonk!
+                }
+                
+                // Zero out vertical velocity on ground
+                this.player.velocityY = 0;
 
-                if (hitTileRect) {
-                    // ─── Bouncy tile check ───
-                    const hitTile = hitTileRect.tile;
+                // Ground Tile Interactions
+                if (groundTileRect) {
+                    const hitTile = groundTileRect.tile;
                     const hitRt = this.tileRuntime.get(hitTile.id);
                     const hitBehaviors = this.getTileBehaviors(hitTile);
-                    const bouncyBehavior = hitBehaviors.find(b => b.type === 'bouncy') as import('../types').BouncyBehavior | undefined;
-
+                    const bouncyBehavior = hitBehaviors.find(b => b.type === 'bouncy');
                     if (bouncyBehavior && hitRt && hitRt.bounceCooldownTimer <= 0) {
                         this.player.velocityY = -bouncyBehavior.force;
                         this.player.isGrounded = false;
                         this.player.state = 'jump';
                         hitRt.bounceCooldownTimer = bouncyBehavior.cooldown;
-                    } else {
-                        if (shouldCrouch && canUpdateMoveState) this.player.state = 'crouch';
-                        else if (canUpdateMoveState) {
-                            if (dx === 0 && !onSlippery) this.player.state = 'idle';
-                            else if (Math.abs(this.player.velocityX) > 5 || dx !== 0) this.player.state = 'walk';
-                            else this.player.state = 'idle';
-                        }
-                        this.player.velocityY = 0;
-                    }
-                } else {
-                    // Hit generic shape (floor) - Normal landing
-                    if (shouldCrouch && canUpdateMoveState) this.player.state = 'crouch';
-                    else if (canUpdateMoveState) {
+                    } else if (canUpdateMoveState) {
                         if (dx === 0 && !onSlippery) this.player.state = 'idle';
                         else if (Math.abs(this.player.velocityX) > 5 || dx !== 0) this.player.state = 'walk';
                         else this.player.state = 'idle';
                     }
-                    this.player.velocityY = 0;
+                } else {
+                    if (canUpdateMoveState) {
+                        if (dx === 0 && !onSlippery) this.player.state = 'idle';
+                        else if (Math.abs(this.player.velocityX) > 5 || dx !== 0) this.player.state = 'walk';
+                        else this.player.state = 'idle';
+                    }
                 }
             } else {
-                // Hit ceiling
-                this.player.velocityY = 0;
+                 if (this.player.velocityY < 0 && vel.y > -1) {
+                     this.player.velocityY = 0; // bonk ceiling
+                 }
+            }
+
+            // Wall Collision detection for Wall Slide
+            // If requested velocityX is high but actual is near 0, we hit a wall
+            const blockedHorizontal = (Math.abs(this.player.velocityX) > 10 && Math.abs(vel.x * 60) < 5);
+            let hitWall = blockedHorizontal;
+
+            if (hitWall) {
+                this.player.velocityX = 0;
+                
+                if (!this.player.isGrounded && !shouldCrouch && !this.player.isOverheated) {
+                    this.player.isOnWall = true;
+                    this.player.wallDirection = dx !== 0 ? Math.sign(dx) : (this.player.facingRight ? 1 : -1);
+                    
+                    if ((dx > 0 && this.player.wallDirection === 1) || (dx < 0 && this.player.wallDirection === -1)) {
+                        if ((this.player.wallSlideTimer || 0) <= 0) {
+                            this.player.wallSlideTimer = 1.5;
+                        }
+                    } else {
+                        this.player.wallFriction = Math.max(0, (this.player.wallFriction || 0) - 20 * dt);
+                    }
+                }
+            } else {
+                 this.player.wallSlideTimer = 0;
+                 this.player.wallFriction = Math.max(0, (this.player.wallFriction || 0) - 50 * dt);
+            }
+
+            if (this.player.isOnWall && !this.player.isOverheated) {
+                 if ((this.player.wallSlideTimer || 0) > 0) {
+                     this.player.wallSlideTimer = (this.player.wallSlideTimer || 0) - dt;
+                     this.player.wallFriction = Math.min(100, (this.player.wallFriction || 0) + 60 * dt);
+                     if (this.player.velocityY > 0) {
+                         this.player.velocityY = Math.min(this.player.velocityY, moveSpeed * 0.2); // Slower fall = slide
+                     }
+                     if (this.player.wallFriction >= 100) {
+                         this.player.isOverheated = true;
+                         this.player.isOnWall = false;
+                         this.spawnDust(
+                            this.player.wallDirection === 1 ? this.player.x + this.player.width : this.player.x,
+                            this.player.y + this.player.height / 2, 10, '#ef4444'
+                         );
+                     }
+                 } else {
+                     this.player.wallFriction = Math.max(0, (this.player.wallFriction || 0) - 10 * dt);
+                 }
+                 if (this.player.velocityY > 0 && Math.random() < ((this.player.wallFriction || 0) / 100)) {
+                    this.spawnParticle({
+                        x: this.player.wallDirection === 1 ? this.player.x + this.player.width : this.player.x,
+                        y: this.player.y + this.player.height,
+                        vx: -(this.player.wallDirection || 1) * (5 + Math.random() * 10),
+                        vy: -(10 + Math.random() * 20),
+                        life: 0.2 + Math.random() * 0.2, color: (this.player.wallFriction || 0) > 80 ? '#ef4444' : '#fbbf24', size: 2 + Math.random() * 2
+                    });
+                }
             }
         }
         // --- Apply Freefall State ---
@@ -1644,68 +1576,10 @@ export class GameRunner {
             this.player.state = 'freefall';
         }
 
-        // ─── Pop-off Unstuck Mechanic ───
-        // If after all movement resolution the player is still inside something (e.g. crushed), pop them out
-        collider.x = this.player.x;
-        collider.y = this.player.y;
-        if (this.physics.checkCollision(collider, tileRects) || this.physics.checkCollisionShapes(collider, this.collisionShapes)) {
-            let poppedOut = false;
-            // Check increasing distances to find a safe spot
-            for (let r = 2; r <= 32; r += 4) {
-                const offsets = [
-                    { dx: 0, dy: -r }, // Top (prioritize popping up)
-                    { dx: r, dy: 0 },  // Right
-                    { dx: -r, dy: 0 }, // Left
-                    { dx: 0, dy: r },  // Bottom
-                    // Diagonals
-                    { dx: r, dy: -r }, { dx: -r, dy: -r },
-                    { dx: r, dy: r }, { dx: -r, dy: r }
-                ];
-                for (const offset of offsets) {
-                    collider.x = this.player.x + offset.dx;
-                    collider.y = this.player.y + offset.dy;
-                    if (!this.physics.checkCollision(collider, tileRects) && !this.physics.checkCollisionShapes(collider, this.collisionShapes)) {
-                        this.player.x = collider.x;
-                        this.player.y = collider.y;
-                        poppedOut = true;
-
-                        // Spawn pop-off visual effects
-                        this.spawnDust(this.player.x + this.player.width / 2, this.player.y + this.player.height / 2, 8, '#f87171');
-                        for (let i = 0; i < 6; i++) {
-                            this.spawnParticle({
-                                x: this.player.x + this.player.width / 2,
-                                y: this.player.y + this.player.height / 2,
-                                vx: (Math.random() - 0.5) * 150,
-                                vy: (Math.random() - 0.5) * 150,
-                                life: 0.2 + Math.random() * 0.2,
-                                color: '#ffffff',
-                                size: 3
-                            });
-                        }
-                        // Visual bump
-                        this.screenShakeTimer = 0.1;
-                        this.screenShakeIntensity = 3;
-                        break;
-                    }
-                }
-                if (poppedOut) break;
-            }
-            if (!poppedOut) {
-                // Absolute fallback if severely crushed
-                this.player.y -= 40;
-            }
-        }
-
         // Animation Timer
         this.player.animationTimer += dt;
 
-        // Visual FX Recovery: Squash & Stretch
-        if (this.player.scaleX !== undefined) {
-            this.player.scaleX += (1 - this.player.scaleX) * 10 * dt; // Lerp back to 1
-        }
-        if (this.player.scaleY !== undefined) {
-            this.player.scaleY += (1 - this.player.scaleY) * 10 * dt; // Lerp back to 1
-        }
+        // Visual FX Recovery: Squash & Stretch — now handled by AnimationSystem
 
         // Visual FX: Flip Rotation
         if (this.player.rotation !== undefined && this.player.rotation !== 0) {
@@ -1845,7 +1719,7 @@ export class GameRunner {
                 hitbox.y < enemy.y + enemy.height && hitbox.y + hitbox.height > enemy.y) {
                 // Hit!
                 hitAny = true;
-                enemy.hp -= damage;
+                enemy.hp -= damage; this.spawnDamageText(enemy.x + enemy.width / 2, enemy.y, damage, '#ffffff');
                 enemy.state = 'hit';
                 enemy.animationTimer = 0;
 
@@ -1864,14 +1738,12 @@ export class GameRunner {
                 this.spawnDust(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2, sparks, color);
 
                 if (isFinalHit || stunIntensity === 'heavy') {
-                    this.screenShakeTimer = 0.4;
-                    this.screenShakeIntensity = 15;
+                    this.triggerScreenShake(15);
                     // Heavy hit pushes enemy right away
                     enemy.velocityX = this.player!.facingRight ? 250 : -250;
                     enemy.velocityY = -150;
                 } else {
-                    this.screenShakeTimer = 0.1;
-                    this.screenShakeIntensity = 4;
+                    this.triggerScreenShake(4);
                     // Light hits will push slightly, but mainly they freeze
                     enemy.velocityX = this.player!.facingRight ? 50 : -50;
                     enemy.velocityY = 0;
@@ -1892,8 +1764,7 @@ export class GameRunner {
                             size: 4 + Math.random() * 6
                         });
                     }
-                    this.screenShakeTimer = 0.3;
-                    this.screenShakeIntensity = 10;
+                    this.triggerScreenShake(10);
                 }
             }
         });
@@ -1903,8 +1774,7 @@ export class GameRunner {
             // A simple implementation of hit-stop without massive engine rewrite:
             // Just delay the next animation frame slightly, or we can use a sleep if we had one.
             // Since we can't block the JS thread safely, we'll trigger a massive screen shake instead.
-            this.screenShakeTimer = Math.max(this.screenShakeTimer, 0.4);
-            this.screenShakeIntensity = Math.max(this.screenShakeIntensity, 15);
+            this.triggerScreenShake(15);
         }
     }
 
@@ -2028,8 +1898,7 @@ export class GameRunner {
                             enemy.y - 20 < this.player!.y + this.player!.height && enemy.y + enemy.height + 20 > this.player!.y) {
                             this.hitPlayer(25);
                         }
-                        this.screenShakeTimer = 0.2;
-                        this.screenShakeIntensity = 8;
+                        this.triggerScreenShake(8);
                     }, 600);
                 } else if (isFlyer) {
                     // Swoop
@@ -2125,7 +1994,7 @@ export class GameRunner {
 
     private hitPlayer(damage: number) {
         if (!this.player || this.player.state === 'hit' || (this.player.hitStunTimer && this.player.hitStunTimer > 0)) return;
-        this.player.hp -= damage;
+        this.player.hp -= damage; this.spawnDamageText(this.player.x + this.player.width / 2, this.player.y, damage, '#ef4444');
         this.player.state = 'hit';
         this.player.animationTimer = 0;
 
@@ -2135,8 +2004,7 @@ export class GameRunner {
         this.player.comboVariant = undefined;
         this.player.comboStep = undefined;
 
-        this.screenShakeTimer = 0.3;
-        this.screenShakeIntensity = 8;
+        this.triggerScreenShake(8);
         this.emitStats();
 
         // Knockback
@@ -2189,6 +2057,8 @@ export class GameRunner {
             }
 
             for (const behavior of behaviors) {
+                const prevOffset = rt.movingOffset;
+
                 switch (behavior.type) {
                     case 'moving': {
                         const maxOffset = behavior.distance * this.gridSize;
@@ -2355,431 +2225,11 @@ export class GameRunner {
 
                     // Slippery: handled in player update, no per-tile update needed
                 } // end switch
-            }
-        }
-    }
 
-
-    private render() {
-        // Clear
-        this.ctx.fillStyle = '#1e1e2e'; // Darker background
-        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-
-        // Screen Shake Apply
-        this.ctx.save();
-        if (this.screenShakeTimer > 0) {
-            const dx = (Math.random() - 0.5) * this.screenShakeIntensity * 2;
-            const dy = (Math.random() - 0.5) * this.screenShakeIntensity * 2;
-            this.ctx.translate(dx, dy);
-        }
-
-        // --- RENDER SKYBOX ---
-        this.skyboxLayers.forEach(layer => {
-            if (!layer.visible) return;
-
-            this.ctx.save();
-            this.ctx.globalAlpha = layer.opacity;
-
-            if (layer.type === 'color') {
-                this.ctx.fillStyle = layer.value;
-                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-            } else if (layer.type === 'image' && layer.value) {
-                const img = this.getTileImage(layer.value);
-                if (img.complete && img.naturalWidth > 0) {
-                    const runtimeOffset = this.skyboxOffsets.get(layer.id) || { x: 0, y: 0 };
-                    let offsetX = layer.offset.x + runtimeOffset.x;
-                    let offsetY = layer.offset.y + runtimeOffset.y;
-
-                    // Apply parallax smoothly using exact camera coordinates, we will floor later to prevent fractional pixel rendering stutter
-                    // types.ts defines parallax as: 0 = fixed to screen (UI/distant sky), 1 = fixed to world (normal)
-                    offsetX -= this.camera.x * layer.parallax.x;
-                    offsetY -= this.camera.y * layer.parallax.y;
-
-                    const scaleX = layer.scale.x;
-                    const scaleY = layer.scale.y;
-
-                    let sw = Math.floor(img.naturalWidth * scaleX);
-                    let sh = Math.floor(img.naturalHeight * scaleY);
-
-                    let repeatX = layer.repeat === 'repeat' || layer.repeat === 'repeat-x';
-                    let repeatY = layer.repeat === 'repeat' || layer.repeat === 'repeat-y';
-                    let isClamp = layer.repeat === 'clamp';
-
-                    if (layer.repeat === 'stretch') {
-                        sw = this.canvas.width;
-                        sh = this.canvas.height;
-                        offsetX = 0;
-                        offsetY = 0;
-                        repeatX = false;
-                        repeatY = false;
-                        isClamp = true;
-                    } else if (layer.repeat === 'stretch-x') {
-                        // Stretch Width (Repeat Vertical)
-                        const scale = this.canvas.width / img.naturalWidth;
-                        sw = this.canvas.width;
-                        sh = Math.floor(img.naturalHeight * scale);
-                        offsetX = 0;
-                        repeatX = false;
-                        repeatY = true;
-                        isClamp = false;
-                    } else if (layer.repeat === 'stretch-y') {
-                        // Stretch Height (Repeat Horizontal)
-                        const scale = this.canvas.height / img.naturalHeight;
-                        sw = Math.floor(img.naturalWidth * scale);
-                        sh = this.canvas.height;
-                        offsetY = 0;
-                        repeatX = true;
-                        repeatY = false;
-                        isClamp = false;
-                    }
-
-                    // Tiling Logic
-                    const mod = (n: number, m: number) => ((n % m) + m) % m;
-
-                    if (isClamp) {
-                        this.ctx.drawImage(img, Math.floor(offsetX), Math.floor(offsetY), sw, sh);
-                    } else {
-                        const startX = mod(offsetX, sw);
-                        const startY = mod(offsetY, sh);
-
-                        const cols = repeatX ? Math.ceil(this.canvas.width / sw) + 2 : 1;
-                        const rows = repeatY ? Math.ceil(this.canvas.height / sh) + 2 : 1;
-
-                        const startCol = repeatX ? -1 : 0;
-                        const startRow = repeatY ? -1 : 0;
-
-                        for (let c = startCol; c < cols; c++) {
-                            for (let r = startRow; r < rows; r++) {
-                                const dx = Math.floor(repeatX ? startX + c * sw : offsetX);
-                                const dy = Math.floor(repeatY ? startY + r * sh : offsetY);
-
-                                this.ctx.drawImage(img, dx, dy, sw, sh);
-                            }
-                        }
-                    }
-                }
-            }
-            this.ctx.restore();
-        });
-
-        this.ctx.save();
-        this.ctx.translate(-Math.floor(this.camera.x), -Math.floor(this.camera.y));
-
-        // ─── Render by Layer ───
-        const rectsByLayer = this.cachedRectsByLayer;
-
-        // [OPTIMIZATION] Viewport Culling Bounds
-        const camX = this.camera.x;
-        const camY = this.camera.y;
-        const sw = this.canvas.width;
-        const sh = this.canvas.height;
-        const pad = this.gridSize * 2;
-
-        const cullMinX = camX - pad;
-        const cullMaxX = camX + sw + pad;
-        const cullMinY = camY - pad;
-        const cullMaxY = camY + sh + pad;
-
-        const imagesByLayer = new Map<string, LevelImage[]>();
-        this.levelImages.forEach(img => {
-            const layerId = img.layerId || DEFAULT_LAYER_ID;
-            if (!imagesByLayer.has(layerId)) imagesByLayer.set(layerId, []);
-            imagesByLayer.get(layerId)!.push(img);
-        });
-
-        const sortedLayers = [...this.layers].sort((a, b) => a.order - b.order);
-
-        sortedLayers.forEach(layer => {
-            if (!layer.visible) return;
-
-            // 1. Draw Tiles for this layer
-            const layerRects = rectsByLayer.get(layer.id) || [];
-            const SVG_TILE_SET = new Set(['grass', 'water', 'lava', 'crystal']);
-            const currentTime = performance.now() / 1000;
-            for (const tr of layerRects) {
-                const { tile, x, y } = tr;
-
-                // [OPTIMIZATION] Viewport Culling
-                if (x + tr.width < cullMinX || x > cullMaxX || y + tr.height < cullMinY || y > cullMaxY) {
-                    continue;
-                }
-
-                // ─── SVG Tiles: render via pre-cached canvas bitmaps ───
-                if (SVG_TILE_SET.has(tile.spriteId)) {
-                    const isSurface = tile.spriteId === 'water'
-                        ? !this.waterOccupied.has(`${tile.layerId}:${tile.gridX},${tile.gridY - 1}`)
-                        : undefined;
-                    TileSpriteCache.drawSvgTile(this.ctx, x, y, this.gridSize, tile.spriteId, currentTime, {
-                        isSurface,
-                        isRustling: this.grassRustling.has(tile.id),
-                        opacity: tile.opacity,
-                        rotation: tile.rotation,
-                        scaleX: tile.scaleX,
-                        scaleY: tile.scaleY,
-                        glowColor: tile.glowColor,
-                        glow: tile.glow,
-                    });
-                    continue;
-                }
-
-                const def = this.tileDefs.get(tile.spriteId);
-                const rt = this.tileRuntime.get(tile.id);
-
-                this.ctx.save();
-
-                // ─── Apply tile transform (scale, rotation) ───
-                const cx = x + this.gridSize / 2;
-                const cy = y + this.gridSize / 2;
-                this.ctx.translate(cx, cy);
-                if (tile.rotation) {
-                    this.ctx.rotate(tile.rotation * Math.PI / 180);
-                }
-                const sx = tile.scaleX ?? 1;
-                const sy = tile.scaleY ?? 1;
-                if (sx !== 1 || sy !== 1) {
-                    this.ctx.scale(sx, sy);
-                }
-                this.ctx.translate(-cx, -cy);
-
-                // Apply floating tilt (stacks on top of tile rotation)
-                if (tile.behavior?.type === 'floating' && rt && rt.tiltAngle !== 0) {
-                    this.ctx.translate(cx, cy);
-                    this.ctx.rotate(rt.tiltAngle * Math.PI / 180);
-                    this.ctx.translate(-cx, -cy);
-                }
-
-                // Apply tile opacity
-                this.ctx.globalAlpha = tile.opacity ?? 1;
-
-                // Opacity for dead tiles (fade as they fall)
-                if (tile.behavior?.type === 'dead' && rt && rt.deadState === 'falling') {
-                    this.ctx.globalAlpha *= Math.max(0, 1 - rt.fallOffset / 500);
-                }
-
-                // Glow
-                if (tile.glowColor || tile.glow) {
-                    let currentGlowColor = tile.glowColor || tile.glow?.color || '#ffffff';
-                    let intensity = tile.glow?.intensity ?? 15;
-
-                    if (tile.glow) {
-                        const time = performance.now() / 1000;
-                        const speed = tile.glow.speed || 1;
-                        if (tile.glow.style === 'pulsing') {
-                            const pulse = (Math.sin(time * speed * Math.PI) + 1) / 2;
-                            intensity = intensity * (0.5 + 0.5 * pulse);
-                        } else if (tile.glow.style === 'multi-color' && tile.glow.colors && tile.glow.colors.length > 0) {
-                            const lerpHex = (a: string, b: string, t: number) => {
-                                if (!a || !b) return a || b || '#ffffff';
-                                const ah = parseInt(a.replace('#', ''), 16);
-                                const ar = (ah >> 16) & 255; const ag = (ah >> 8) & 255; const ab = ah & 255;
-                                const bh = parseInt(b.replace('#', ''), 16);
-                                const br = (bh >> 16) & 255; const bg = (bh >> 8) & 255; const bb = bh & 255;
-                                const rr = Math.round(ar + (br - ar) * t);
-                                const rg = Math.round(ag + (bg - ag) * t);
-                                const rb = Math.round(ab + (bb - ab) * t);
-                                return `#${((1 << 24) + (rr << 16) + (rg << 8) + rb).toString(16).slice(1)}`;
-                            };
-                            const t = (time * speed) % tile.glow.colors.length;
-                            const idx1 = Math.floor(t);
-                            const idx2 = (idx1 + 1) % tile.glow.colors.length;
-                            const blend = t - idx1;
-                            currentGlowColor = lerpHex(tile.glow.colors[idx1], tile.glow.colors[idx2], blend);
-                        } else if (tile.glow.style === 'random') {
-                            intensity = intensity * (0.5 + Math.random() * 0.5);
-                            if (tile.glow.colors && tile.glow.colors.length > 0) {
-                                const tHash = Math.floor(time * speed * 10);
-                                const idx = tHash % tile.glow.colors.length;
-                                currentGlowColor = tile.glow.colors[idx];
-                            } else {
-                                const timeHash = Math.floor(time * speed * 10);
-                                const r = (timeHash * 13) % 255;
-                                const g = (timeHash * 17) % 255;
-                                const b = (timeHash * 23) % 255;
-                                currentGlowColor = `rgb(${r},${g},${b})`;
-                            }
-                        }
-                    }
-
-                    this.ctx.shadowColor = currentGlowColor;
-                    this.ctx.shadowBlur = intensity;
-                }
-
-                // Default Color
-                this.ctx.fillStyle = tile.hasCollision ? '#4b5563' : '#374151';
-                if (def) this.ctx.fillStyle = def.color;
-
-                let drawn = false;
-
-                // Draw Text Object
-                if (tile.spriteId === 'text_object' && tile.text) {
-                    const textOpts = {
-                        text: tile.text,
-                        family: tile.fontFamily || 'sans-serif',
-                        size: tile.fontSize || 32,
-                        color: tile.fontColor || '#ffffff',
-                    };
-
-                    this.ctx.fillStyle = textOpts.color;
-                    this.ctx.font = `${textOpts.size}px "${textOpts.family}"`;
-                    this.ctx.textAlign = 'left';
-                    this.ctx.textBaseline = 'top';
-                    this.ctx.fillText(textOpts.text, x, y);
-                    drawn = true;
-                }
-                // Draw Texture if available
-                else if (def && def.textureSrc) {
-                    const img = this.getTileImage(def.textureSrc);
-                    if (img.complete && img.naturalWidth > 0) {
-                        if (def.srcX !== undefined && def.srcY !== undefined && def.srcWidth && def.srcHeight) {
-                            this.ctx.drawImage(img, def.srcX, def.srcY, def.srcWidth, def.srcHeight, x, y, this.gridSize, this.gridSize);
-                        } else {
-                            this.ctx.drawImage(img, x, y, this.gridSize, this.gridSize);
-                        }
-                        drawn = true;
-                    }
-                }
-
-                if (!drawn) {
-                    this.ctx.fillRect(x, y, this.gridSize, this.gridSize);
-                }
-
-                // ─── Behavior visual cues in play mode ───
-                if (tile.behavior || tile.behavior2) {
-                    this.renderBehaviorCue(tile, x, y, rt);
-                }
-
-                this.ctx.restore();
-            }
-
-            // 2. Draw Level Images (Props) for this layer
-            const layerImages = imagesByLayer.get(layer.id) || [];
-            layerImages.sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0)).forEach(img => {
-                if (!img.visible) return;
-                const image = this.getTileImage(img.src);
-                if (image.complete && image.naturalWidth > 0) {
-                    this.ctx.save();
-
-                    const cx = img.x + img.width / 2;
-                    const cy = img.y + img.height / 2;
-
-                    this.ctx.translate(cx, cy);
-                    this.ctx.rotate((img.rotation || 0) * Math.PI / 180);
-                    this.ctx.translate(-cx, -cy);
-
-                    this.ctx.globalAlpha = img.opacity ?? 1;
-                    this.ctx.drawImage(image, img.x, img.y, img.width, img.height);
-
-                    this.ctx.restore();
-                }
-            });
-        });
-
-        // Draw Enemies
-        this.enemies.forEach(enemy => {
-            if (enemy.dead) return;
-            EnemyRenderer.render(this.ctx, enemy as any);
-        });
-
-        // Draw Projectiles
-        this.enemyProjectiles.forEach(proj => {
-            this.ctx.fillStyle = proj.color;
-            if (proj.shape === 'circle') {
-                this.ctx.beginPath();
-                this.ctx.arc(proj.x, proj.y, proj.width / 2, 0, Math.PI * 2);
-                this.ctx.fill();
-            } else {
-                this.ctx.fillRect(proj.x - proj.width / 2, proj.y - proj.height / 2, proj.width, proj.height);
-            }
-        });
-
-        // Draw Player
-        if (this.player) {
-            if (this.playerTexture) {
-                this.ctx.drawImage(this.playerTexture, this.player.x, this.player.y, this.player.width, this.player.height);
-            } else {
-                DefaultCharacter.render(this.ctx, this.player);
-            }
-        }
-
-        // Draw Remote Players
-        this.remotePlayers.forEach(rp => {
-            DefaultCharacter.render(this.ctx, rp);
-        });
-
-        // --- Render Particles ---
-        this.particles.forEach(p => {
-            this.ctx.save();
-            this.ctx.translate(p.x, p.y);
-            if (p.rotation !== undefined) {
-                this.ctx.rotate(p.rotation * Math.PI / 180);
-            }
-
-            this.ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
-
-            const currentSize = p.shrink ? p.size * (p.life / p.maxLife) : p.size;
-            this.ctx.fillStyle = p.color;
-            this.ctx.strokeStyle = p.color;
-            this.ctx.lineWidth = 2;
-
-            this.ctx.beginPath();
-            if (p.shape === 'circle') {
-                this.ctx.arc(0, 0, currentSize, 0, Math.PI * 2);
-                this.ctx.fill();
-            } else if (p.shape === 'square') {
-                this.ctx.fillRect(-currentSize / 2, -currentSize / 2, currentSize, currentSize);
-            } else if (p.shape === 'ring') {
-                this.ctx.arc(0, 0, currentSize, 0, Math.PI * 2);
-                this.ctx.stroke();
-            } else if (p.shape === 'slash' as any) {
-                this.ctx.beginPath();
-                this.ctx.moveTo(-currentSize, 0);
-                this.ctx.bezierCurveTo(-currentSize / 2, -currentSize / 4, currentSize / 2, -currentSize / 4, currentSize, 0);
-                this.ctx.bezierCurveTo(currentSize / 2, currentSize / 4, -currentSize / 2, currentSize / 4, -currentSize, 0);
-                this.ctx.fill();
-            }
-
-            this.ctx.restore();
-        });
-
-        this.ctx.restore(); // Restore camera translation
-
-        this.ctx.restore(); // Restore screen shake
-
-        // HUD
-        this.ctx.fillStyle = 'white';
-        this.ctx.font = '12px monospace';
-        this.ctx.fillText("PLAY MODE", 10, 20);
-        this.ctx.fillText("WASD / Arrows to Move + Jump", 10, 35);
-        this.ctx.fillText("S to Crouch", 10, 50);
-    }
-
-    /** Render small visual cues for behavior tiles in play mode */
-    private renderBehaviorCue(tile: Tile, x: number, y: number, rt: TileRuntimeState | undefined) {
-        const behaviors = this.getTileBehaviors(tile);
-        if (behaviors.length === 0) return;
-
-        const gs = this.gridSize;
-        this.ctx.save();
-        this.ctx.globalAlpha = 0.6;
-        this.ctx.font = `${Math.max(10, gs * 0.35)}px sans-serif`;
-        this.ctx.textAlign = 'center';
-        this.ctx.textBaseline = 'middle';
-
-        for (const behavior of behaviors) {
-            switch (behavior.type) {
-                case 'bouncy': {
-                    // Subtle spring squash animation
-                    const squash = rt && rt.bounceCooldownTimer > 0 ? 0.85 : 1;
-                    this.ctx.save();
-                    this.ctx.translate(x + gs / 2, y + gs);
-                    this.ctx.scale(1 / squash, squash);
-                    this.ctx.translate(-(x + gs / 2), -(y + gs));
-                    this.ctx.restore();
-                    break;
+                if (behavior.type === 'moving' || behavior.type === 'transitioning') {
+                    rt.lastDelta = rt.movingOffset - prevOffset;
                 }
             }
         }
-
-        this.ctx.restore();
     }
 }

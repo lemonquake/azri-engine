@@ -5,7 +5,7 @@ import { GameOverScreen } from './GameOverScreen';
 import { PlayerHUD } from './PlayerHUD';
 
 export function GameCanvas() {
-    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
     const runnerRef = useRef<GameRunner | null>(null);
     const [stats, setStats] = useState({ hp: 100, maxHp: 100, exp: 0, maxExp: 100, level: 1, wallJumps: 3, maxWallJumps: 3, wallFriction: 0 });
 
@@ -14,15 +14,11 @@ export function GameCanvas() {
     const [runKey, setRunKey] = useState(0); // Used to force restart 
 
     useEffect(() => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-
-        if (canvas) {
-            canvas.focus();
-        }
+        const container = containerRef.current;
+        if (!container) return;
 
         // Initialize Game Runner
-        runnerRef.current = new GameRunner(canvas);
+        runnerRef.current = new GameRunner(container);
 
         // Subscribe to stats
         runnerRef.current.onStatsChange = (newStats) => {
@@ -42,13 +38,11 @@ export function GameCanvas() {
     }, [runKey]); // Will re-run setup and teardown when runKey changes
 
     return (
-        <div className="relative w-full h-full overflow-hidden">
-            <canvas
-                ref={canvasRef}
-                className="w-full h-full block touch-none focus:outline-none bg-[#1e1e2e]"
-                tabIndex={0}
-                onContextMenu={(e) => e.preventDefault()}
-            />
+        <div 
+            ref={containerRef}
+            className="relative w-full h-full overflow-hidden bg-[#1e1e2e]"
+            tabIndex={0}
+        >
 
             {/* --- Game Over Overlay --- */}
             {isGameOver && (

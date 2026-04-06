@@ -347,6 +347,48 @@ function generateGrassFrames(): OffscreenCanvas[] {
     return frames;
 }
 
+// ─── GROUND frames (Static dirt + pulsing highlight) ───────────────────────
+
+function generateGroundFrames(): OffscreenCanvas[] {
+    const frames: OffscreenCanvas[] = [];
+
+    for (let i = 0; i < FRAME_COUNT; i++) {
+        const canvas = createFrame();
+        const ctx = canvas.getContext('2d')!;
+        const t = i / FRAME_COUNT; // 0..1 normalized time for a 4s loop
+
+        // Base dirt
+        ctx.fillStyle = '#614022';
+        ctx.fillRect(0, 0, 32, 32);
+
+        // Shadows
+        ctx.fillStyle = '#4a301a';
+        ctx.beginPath();
+        ctx.rect(4, 4, 2, 2);
+        ctx.rect(24, 8, 2, 2);
+        ctx.rect(12, 20, 2, 2);
+        ctx.rect(28, 26, 2, 2);
+        ctx.rect(2, 24, 2, 2);
+        ctx.fill();
+
+        // Highlight 1 (no animation)
+        ctx.fillStyle = '#7d522c';
+        const p1 = new Path2D('M 6 12 Q 10 10 14 14 T 22 16 T 28 12 L 28 14 Q 22 18 14 16 T 6 14 Z');
+        ctx.fill(p1);
+
+        // Highlight 2 (pulsing outline, delayed by 1s (0.25 time))
+        const pulseT = ((t - 0.25 + 1.0) % 1.0) * Math.PI * 2;
+        const pulse = 0.95 + 0.05 * Math.sin(pulseT);
+        ctx.globalAlpha = pulse;
+        const p2 = new Path2D('M -2 28 Q 6 24 16 30 T 34 26 L 34 28 Q 16 32 6 26 T -2 30 Z');
+        ctx.fill(p2);
+        
+        ctx.globalAlpha = 1.0;
+        frames.push(canvas);
+    }
+    return frames;
+}
+
 // ─── Grass "rustle" frames (stronger sway for player interaction) ────────
 
 function generateGrassRustleFrames(): OffscreenCanvas[] {
@@ -412,6 +454,7 @@ function ensureInitialized() {
     frameCache.set('water', generateWaterBodyFrames());
     frameCache.set('water_surface', generateWaterSurfaceFrames());
     frameCache.set('crystal', generateCrystalFrames());
+    frameCache.set('ground', generateGroundFrames());
     frameCache.set('grass', generateGrassFrames());
     frameCache.set('grass_rustle', generateGrassRustleFrames());
 }

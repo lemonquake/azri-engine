@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { clsx } from 'clsx';
+import anime from 'animejs';
 
 interface PlayerHUDProps {
     hp: number;
@@ -15,21 +16,66 @@ interface PlayerHUDProps {
 export function PlayerHUD({ hp, maxHp, exp, maxExp, level, wallJumps = 4, maxWallJumps = 4, wallFriction = 0 }: PlayerHUDProps) {
     const [isDamaged, setIsDamaged] = useState(false);
     const [prevHp, setPrevHp] = useState(hp);
-
-    useEffect(() => {
-        if (hp < prevHp) {
-            setIsDamaged(true);
-            const timer = setTimeout(() => setIsDamaged(false), 300);
-            return () => clearTimeout(timer);
-        }
-        setPrevHp(hp);
-    }, [hp, prevHp]);
+    const [prevExp, setPrevExp] = useState(exp);
+    
+    const containerRef = useRef<HTMLDivElement>(null);
+    const hpBarRef = useRef<HTMLDivElement>(null);
+    const expBarRef = useRef<HTMLDivElement>(null);
 
     const hpPercent = Math.min(100, Math.max(0, (hp / maxHp) * 100));
     const expPercent = Math.min(100, Math.max(0, (exp / maxExp) * 100));
 
+    useEffect(() => {
+        if (!hpBarRef.current) return;
+        anime({
+            targets: hpBarRef.current,
+            width: `${hpPercent}%`,
+            duration: hp < prevHp ? 200 : 800, // Faster on damage, elastic on heal
+            easing: hp < prevHp ? 'easeOutQuad' : 'easeOutElastic(1, .8)'
+        });
+
+        if (hp < prevHp) {
+            setIsDamaged(true);
+            const timer = setTimeout(() => setIsDamaged(false), 300);
+            
+            // Anime shake for the entire HUD
+            if (containerRef.current) {
+                anime({
+                    targets: containerRef.current,
+                    translateX: [
+                        { value: 10, duration: 50 },
+                        { value: -10, duration: 50 },
+                        { value: 5, duration: 50 },
+                        { value: 0, duration: 50 }
+                    ],
+                    translateY: [
+                        { value: 5, duration: 50 },
+                        { value: -5, duration: 50 },
+                        { value: 0, duration: 50 }
+                    ],
+                    easing: 'easeInOutSine'
+                });
+            }
+
+            setPrevHp(hp);
+            return () => clearTimeout(timer);
+        }
+        setPrevHp(hp);
+    }, [hp, prevHp, hpPercent]);
+
+    useEffect(() => {
+        if (!expBarRef.current) return;
+        anime({
+            targets: expBarRef.current,
+            width: `${expPercent}%`,
+            duration: 1000,
+            easing: 'easeOutElastic(1, .6)'
+        });
+        setPrevExp(exp);
+    }, [exp, prevExp, expPercent]);
+
     return (
-        <div className="absolute bottom-6 left-6 flex flex-col gap-3 w-80 select-none pointer-events-none" style={{ fontFamily: "'Press Start 2P', monospace" }}>
+        <div ref={containerRef} className="absolute bottom-6 left-6 flex flex-col gap-3 w-80 select-none pointer-events-none" style={{ fontFamily: "'Press Start 2P', monospace" }}>
             <style>{`
                 @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
                 @keyframes intense-vibrate {
@@ -53,7 +99,7 @@ export function PlayerHUD({ hp, maxHp, exp, maxExp, level, wallJumps = 4, maxWal
                 }
             `}</style>
 
-            <div className={clsx("relative transition-transform duration-100", isDamaged && "translate-x-2 translate-y-2")}>
+            <div className="relative">
 
                 {/* Level Frame */}
                 <div className="absolute -top-6 -left-6 w-16 h-16 bg-slate-900 border-4 border-slate-600 flex flex-col items-center justify-center shadow-2xl z-20 skew-x-[-10deg]">
@@ -66,7 +112,8 @@ export function PlayerHUD({ hp, maxHp, exp, maxExp, level, wallJumps = 4, maxWal
 
                     {/* Fill */}
                     <div
-                        className="absolute top-0 left-0 h-full transition-all duration-300 ease-out flex flex-col"
+                        ref={hpBarRef}
+                        className="absolute top-0 left-0 h-full flex flex-col"
                         style={{ width: `${hpPercent}%` }}
                     >
                         {/* Retro gradient blocky look */}
@@ -103,7 +150,8 @@ export function PlayerHUD({ hp, maxHp, exp, maxExp, level, wallJumps = 4, maxWal
                 {/* EXP BAR (thin line under jump) */}
                 <div className="ml-8 mt-2 relative h-2 bg-slate-900 border-2 border-slate-700 skew-x-[-10deg]">
                     <div
-                        className="absolute top-0 left-0 h-full bg-amber-400 transition-all duration-500 ease-out shadow-[0_0_5px_rgba(251,191,36,0.5)]"
+                        ref={expBarRef}
+                        className="absolute top-0 left-0 h-full bg-amber-400 shadow-[0_0_5px_rgba(251,191,36,0.5)]"
                         style={{ width: `${expPercent}%` }}
                     ></div>
                 </div>
