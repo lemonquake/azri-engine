@@ -369,6 +369,8 @@ function InspectorPanel() {
                                     <SliderInput label="Sink Speed" value={b.sinkSpeed} min={5} max={200} step={5} unit=" px/s" onChange={v => handleBehaviorPropChange(behaviorKey, 'sinkSpeed', v)} />
                                     <SliderInput label="Recover Speed" value={b.recoverSpeed} min={5} max={200} step={5} unit=" px/s" onChange={v => handleBehaviorPropChange(behaviorKey, 'recoverSpeed', v)} />
                                     <SliderInput label="Max Sink" value={b.maxSink} min={2} max={64} step={2} unit=" px" onChange={v => handleBehaviorPropChange(behaviorKey, 'maxSink', v)} />
+                                    <SliderInput label="Bob Height" value={b.bobAmount ?? 6} min={0} max={32} step={1} unit=" px" onChange={v => handleBehaviorPropChange(behaviorKey, 'bobAmount', v)} />
+                                    <SliderInput label="Bob Speed" value={b.bobSpeed ?? 0.6} min={0} max={3} step={0.1} unit=" Hz" onChange={v => handleBehaviorPropChange(behaviorKey, 'bobSpeed', v)} />
                                 </div>
                             </div>
                         );

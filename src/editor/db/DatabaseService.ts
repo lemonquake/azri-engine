@@ -7,8 +7,6 @@ class DatabaseService {
     private SQL: SqlJsStatic | null = null;
     private static instance: DatabaseService;
     private isElectron = false;
-    private fs: any = null;
-    private dbFilePath: string | null = null;
 
     private constructor() { }
 
@@ -23,35 +21,19 @@ class DatabaseService {
         if (this.db) return;
 
         try {
-            // Check if in Electron first so we can use IPC for pathing
-            if (typeof window !== 'undefined' && (window as any).require) {
-                try {
-                    const ipcRenderer = (window as any).require('electron').ipcRenderer;
-                    const path = (window as any).require('path');
-                    this.fs = (window as any).require('fs');
-                    const userDataPath = ipcRenderer.sendSync('get-user-data-path');
-                    this.dbFilePath = path.join(userDataPath, 'azri_engine_db.sqlite');
-                    this.isElectron = true;
-                } catch (e) {
-                    console.log("Not running in Electron or nodeIntegration disabled", e);
-                }
+            // Detect Electron via the contextBridge API (works with contextIsolation:true).
+            const api = (window as any).electronAPI;
+            if (typeof window !== 'undefined' && api?.isElectron) {
+                this.isElectron = true;
             }
 
-            // Load wasm file from public folder or CDN
+            // Load the sql.js wasm file. In Electron, resolve an absolute path via the bridge
+            // (avoids cwd issues); in the browser, load it relative to the page.
             this.SQL = await initSqlJs({
-                // Locate the wasm file. Use absolute path in Electron to avoid cwd issues.
                 locateFile: file => {
-                    if (this.isElectron) {
-                        const path = (window as any).require('path');
-                        const ipcRenderer = (window as any).require('electron').ipcRenderer;
-                        const appPath = ipcRenderer.sendSync('get-app-path');
-                        const isPackaged = ipcRenderer.sendSync('is-packaged');
-
-                        // In production, appPath is resources/app.asar and file is in dist/
-                        // In dev, appPath is project root and file is in public/
-                        return isPackaged
-                            ? path.join(appPath, 'dist', file)
-                            : path.join(appPath, 'public', file);
+                    const bridge = (window as any).electronAPI;
+                    if (this.isElectron && bridge?.getWasmPath) {
+                        return bridge.getWasmPath(file);
                     }
                     return `./${file}`;
                 }
@@ -59,10 +41,16 @@ class DatabaseService {
 
             let databaseData: Uint8Array | null = null;
 
-            if (this.isElectron && this.fs && this.dbFilePath) {
-                if (this.fs.existsSync(this.dbFilePath)) {
-                    databaseData = new Uint8Array(this.fs.readFileSync(this.dbFilePath));
-                    console.log("Database loaded from file.");
+            if (this.isElectron) {
+                try {
+                    const fileData = await api.readDbFile();
+                    if (fileData) {
+                        databaseData = new Uint8Array(fileData);
+                        console.log("Database loaded from file.");
+                    }
+                } catch (e) {
+                    console.warn("Electron DB file read failed; falling back to IndexedDB.", e);
+                    databaseData = await this.loadFromIndexedDB();
                 }
             } else {
                 databaseData = await this.loadFromIndexedDB();
@@ -232,13 +220,14 @@ class DatabaseService {
         if (!this.db) return;
         const data = this.db.export();
 
-        if (this.isElectron && this.fs && this.dbFilePath) {
+        if (this.isElectron) {
             try {
-                this.fs.writeFileSync(this.dbFilePath, Buffer.from(data));
-                return Promise.resolve();
+                const api = (window as any).electronAPI;
+                await api.writeDbFile(data);
+                return;
             } catch (e) {
-                console.error("Failed to write to DB file:", e);
-                return Promise.reject(e);
+                console.error("Failed to write DB file; falling back to IndexedDB.", e);
+                // fall through to IndexedDB persistence below
             }
         }
 

@@ -19,14 +19,12 @@ export interface TileWorldRect {
 export class PhysicsSystem {
     public engine: Matter.Engine;
     public world: Matter.World;
-    private tileSize: number;
-    
+
     // Mapping for logic
     public tileRectsCache: TileWorldRect[] = [];
     public dynamicBodies: Map<string, Matter.Body> = new Map();
 
-    constructor(tileSize: number) {
-        this.tileSize = tileSize;
+    constructor() {
         this.engine = Matter.Engine.create();
         this.world = this.engine.world;
         
@@ -57,8 +55,12 @@ export class PhysicsSystem {
             const cx = tr.x + tr.width / 2;
             const cy = tr.y + tr.height / 2;
             
-            // If it's a moving tile, make it kinematic basically
-            const isMoving = tr.tile.behavior?.type === 'moving' || tr.tile.behavior?.type === 'transitioning';
+            // A tile needs a repositionable (kinematic) collision body if ANY of its behaviors
+            // moves it each frame — moving, transitioning, floating, chaos, or a falling "dead"
+            // tile. Otherwise its collision stays at the spawn point while the sprite moves.
+            const movesEachFrame = (t?: string) =>
+                t === 'moving' || t === 'transitioning' || t === 'floating' || t === 'chaos' || t === 'dead';
+            const isMoving = movesEachFrame(tr.tile.behavior?.type) || movesEachFrame(tr.tile.behavior2?.type);
             
             const body = Matter.Bodies.rectangle(cx, cy, tr.width, tr.height, {
                 isStatic: true,
@@ -115,6 +117,7 @@ export class PhysicsSystem {
         const body = Matter.Bodies.rectangle(cx, cy, width, Math.max(height, 4), {
             inertia: Infinity,
             friction: 0,
+            frictionStatic: 0,
             frictionAir: 0,
             restitution: 0,
             chamfer: { radius: 4 },
@@ -138,22 +141,29 @@ export class PhysicsSystem {
             max: { x: playerBody.position.x + width / 2 - 2, y: playerBody.position.y + height / 2 + 4 }
         };
         const allBodies = Matter.Composite.allBodies(this.world);
-        const collisions = Matter.Query.region(allBodies, bounds).filter(b => b !== playerBody && !b.isSensor);
+        const candidates = Matter.Query.region(allBodies, bounds).filter(b => b !== playerBody && !b.isSensor);
         
+        let isGrounded = false;
         let groundTile = null;
-        for (const b of collisions) {
-            if (b.label.startsWith('tile_') || b.label.startsWith('dynamic_')) {
-                const id = b.label.split('_')[1];
-                const tr = this.tileRectsCache.find(t => t.tile.id === id);
-                if (tr) {
-                    groundTile = tr;
-                    break;
+        for (const b of candidates) {
+            const col = Matter.Collision.collides(playerBody, b);
+            if (col && col.collided) {
+                // Check if the collision normal is vertical (floor/slope, not wall)
+                if (Math.abs(col.normal.y) > 0.7) {
+                    isGrounded = true;
+                    if (b.label.startsWith('tile_') || b.label.startsWith('dynamic_')) {
+                        const id = b.label.substring(b.label.indexOf('_') + 1);
+                        const tr = this.tileRectsCache.find(t => t.tile.id === id);
+                        if (tr) {
+                            groundTile = tr;
+                        }
+                    }
                 }
             }
         }
         
         return {
-            isGrounded: collisions.length > 0,
+            isGrounded,
             groundTileRect: groundTile
         };
     }
@@ -178,20 +188,6 @@ export class PhysicsSystem {
         return false;
     }
 
-    public checkCollisionLegacy(rect: BoxCollider, tiles: Tile[]): boolean {
-        for (const tile of tiles) {
-            if (!tile.hasCollision) continue;
-            const tileRect = {
-                x: tile.gridX * this.tileSize,
-                y: tile.gridY * this.tileSize,
-                width: this.tileSize,
-                height: this.tileSize
-            };
-            if (this.aabb(rect, tileRect)) return true;
-        }
-        return false;
-    }
-
     public getCollidingTile(rect: BoxCollider, tileRects: TileWorldRect[]): TileWorldRect | null {
         for (const tr of tileRects) {
             if (!tr.tile.hasCollision) continue;
@@ -210,6 +206,19 @@ export class PhysicsSystem {
         return this.getCollidingTile(feetRect, tileRects);
     }
 
+    // Cache of reusable probe bodies keyed by size, so AABB-vs-shape checks don't
+    // allocate a fresh Matter body on every call (can be several per enemy per frame).
+    private probeBodyCache = new Map<string, Matter.Body>();
+    private getProbeBody(width: number, height: number): Matter.Body {
+        const key = width + 'x' + height;
+        let body = this.probeBodyCache.get(key);
+        if (!body) {
+            body = Matter.Bodies.rectangle(0, 0, width, height);
+            this.probeBodyCache.set(key, body);
+        }
+        return body;
+    }
+
     public checkCollisionShapes(rect: BoxCollider, shapes: CollisionShape[]): boolean {
         if (!shapes || shapes.length === 0) return false;
         const bounds = {
@@ -218,17 +227,14 @@ export class PhysicsSystem {
         };
         const allBodies = Matter.Composite.allBodies(this.world);
         const regionBodies = Matter.Query.region(allBodies, bounds).filter(b => b.label.startsWith('shape_'));
-        
+
         if (regionBodies.length === 0) return false;
-        
-        const tempRect = Matter.Bodies.rectangle(rect.x + rect.width / 2, rect.y + rect.height / 2, rect.width, rect.height);
+
+        const tempRect = this.getProbeBody(rect.width, rect.height);
+        Matter.Body.setPosition(tempRect, { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 });
         for (const b of regionBodies) {
             if (Matter.Collision.collides(tempRect, b) !== null) return true;
         }
         return false;
-    }
-
-    public applyGravity(velocity: { x: number, y: number }, deltaTime: number): void {
-        velocity.y += 800 * deltaTime;
     }
 }

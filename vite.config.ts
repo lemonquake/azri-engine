@@ -233,5 +233,20 @@ export default defineConfig({
       }
     }
   },
+  build: {
+    // Split large, stable third-party libraries into their own cached chunks so the main
+    // app bundle isn't a single multi-MB file (and returning users re-download less).
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-pixi': ['pixi.js', '@pixi/filter-glow'],
+          'vendor-matter': ['matter-js'],
+          'vendor-react': ['react', 'react-dom'],
+          'vendor-sql': ['sql.js'],
+          'vendor-misc': ['howler', 'animejs', 'peerjs', 'zustand'],
+        },
+      },
+    },
+  },
   plugins: [react(), tailwindcss(), peerServerPlugin()],
 })

@@ -7,6 +7,7 @@ import { NetworkManager } from './NetworkManager';
 import type { NetworkMessage } from './NetworkManager';
 import { PixiRenderer } from '../../engine/rendering/PixiRenderer';
 import { AnimationSystem } from './AnimationSystem';
+import { AudioSystem } from './AudioSystem';
 import Matter from 'matter-js';
 
 /** Runtime state for tiles with behaviors */
@@ -18,6 +19,8 @@ interface TileRuntimeState {
     // Floating
     sinkOffset: number;
     tiltAngle: number;
+    bobOffset: number;
+    bobTime: number;
     playerOnTile: boolean;
 
     // Dead
@@ -67,6 +70,8 @@ function createDefaultRuntimeState(tile?: Tile): TileRuntimeState {
         movingDirection: initialDir,
         sinkOffset: 0,
         tiltAngle: 0,
+        bobOffset: 0,
+        bobTime: 0,
         playerOnTile: false,
         deadState: 'idle',
         deadTimer: 0,
@@ -233,7 +238,7 @@ export class GameRunner {
         DEFAULT_TILES.forEach(def => this.tileDefs.set(def.id, def));
         state.availableTiles.forEach(def => this.tileDefs.set(def.id, def));
 
-        this.physics = new PhysicsSystem(this.gridSize);
+        this.physics = new PhysicsSystem();
 
         // Init runtime states for behavior tiles
         this.tiles.forEach(tile => {
@@ -453,6 +458,12 @@ export class GameRunner {
         if (this.isRunning) return;
         this.isRunning = true;
         this.initTileCaches(); // Cache all tiles for performance!
+
+        // Build the Matter collision world from the cached tile rects + collision shapes.
+        // Without this, the Matter world has no tile bodies and the player falls through
+        // everything. NOTE: startWorld() clears the world, so the player body is (re)added
+        // AFTER it — this also resolves the previous double-add of the player body.
+        this.physics.startWorld(this.cachedTileRects, this.collisionShapes);
         if (this.playerBody) Matter.World.add(this.physics.world, this.playerBody);
         this.lastTime = performance.now();
         
@@ -500,7 +511,16 @@ export class GameRunner {
         }
     }
 
+    private resizePlayerBody(width: number, height: number) {
+        if (!this.playerBody || !this.player) return;
+        const velocity = { x: this.playerBody.velocity.x, y: this.playerBody.velocity.y };
+        Matter.World.remove(this.physics.world, this.playerBody);
+        this.playerBody = this.physics.createPlayerBody(this.player.x, this.player.y, width, height);
+        Matter.Body.setVelocity(this.playerBody, velocity);
+    }
+
     private handleKeyDown(e: KeyboardEvent) {
+        AudioSystem.resume(); // Web Audio needs a user gesture; the first keypress unlocks it.
         this.keys.add(e.key.toLowerCase());
     }
 
@@ -568,7 +588,8 @@ export class GameRunner {
             this.levelImages,
             this.collisionShapes,
             performance.now() / 1000,
-            this.tileDefs
+            this.tileDefs,
+            this.waterOccupied
         );
     }
 
@@ -761,7 +782,7 @@ export class GameRunner {
                         break;
                     }
                     case 'floating': {
-                        wy += rt.sinkOffset;
+                        wy += rt.sinkOffset + rt.bobOffset;
                         break;
                     }
                     case 'dead': {
@@ -782,6 +803,13 @@ export class GameRunner {
             } // end behavior loop
             tr.x = wx;
             tr.y = wy;
+
+            // Keep the Matter collision body for moving/transitioning tiles in sync with
+            // their visual position, so the player collides with the live platform rather
+            // than a stale ghost at the spawn location. No-ops for tiles without a body.
+            if (tile.hasCollision) {
+                this.physics.updateDynamicBody(tile.id, wx, wy, tr.width, tr.height, 0, 0);
+            }
         }
 
         const { moveSpeed, jumpForce, gravity } = this.physicsSettings;
@@ -809,13 +837,12 @@ export class GameRunner {
         const groundTile = groundTileRect?.tile ?? null;
         const groundRt = groundTile ? this.tileRuntime.get(groundTile.id) : null;
 
-        // Mark floating tiles player status
-        this.tileRuntime.forEach((rt, id) => {
-            const tile = this.tiles.find(t => t.id === id);
-            if (tile?.behavior?.type === 'floating') {
-                rt.playerOnTile = groundTile?.id === id;
+        // Mark floating tiles player status (iterate the small dynamicTiles cache, not every tile)
+        for (const dtile of this.dynamicTiles) {
+            if (dtile.tile.behavior?.type === 'floating' || dtile.tile.behavior2?.type === 'floating') {
+                dtile.rt.playerOnTile = groundTile?.id === dtile.tile.id;
             }
-        });
+        }
 
         // Handle Transitioning & Dead Triggers
         if (groundTile && groundRt) {
@@ -872,14 +899,7 @@ export class GameRunner {
 
         // ---- NEW COMBO SYSTEM ----
         const isAttacking = this.player.state.startsWith('attack');
-
-        // Evaluate attack recovery
-        if (this.player.attackCooldown && this.player.attackCooldown > 0) {
-            this.player.attackCooldown -= dt;
-        }
-        if (this.player.attackCooldown && this.player.attackCooldown > 0) {
-            this.player.attackCooldown -= dt;
-        }
+        // (attackCooldown is decremented once above under "Attack Mechanics")
 
         // Can we attack?
         // Must not be hit-stunned. If attacking, must be past a certain animation frame (allow combo buffer)
@@ -890,7 +910,7 @@ export class GameRunner {
         if (canAttack && isJustPressed('q')) {
             let variant = 1;      // 1: Swift, 2: Chain, 3: Heavy
             let step = 1;
-            let isAir = !this.player.isGrounded;
+            const isAir = !this.player.isGrounded;
 
             if (isAir) {
                 this.player.airAttackCount = (this.player.airAttackCount || 0) + 1;
@@ -937,8 +957,8 @@ export class GameRunner {
             this.player.attackCooldown = 0.2; // Buffer window
 
             // --- Movement & Hitbox Tuning per Step ---
-            let range = 60 + step * 20;
-            let height = this.player.height;
+            const range = 60 + step * 20;
+            const height = this.player.height;
             let dmg = 10 + step * 8;
             let stunIntensity: 'light' | 'medium' | 'heavy' = 'light';
             let isFinalHit = false;
@@ -1054,6 +1074,7 @@ export class GameRunner {
         if (isJustPressed(dashKey) && !this.player.isDashing && (this.player.dashCooldownTimer || 0) <= 0) {
             this.player.isDashing = true;
             this.player.isSlamming = false;
+            AudioSystem.play('dash');
             this.player.dashDurationTimer = 0.2; // 200ms dash
             this.player.dashCooldownTimer = 1.0; // 1s cooldown
             // Set dash velocity immediately
@@ -1119,6 +1140,7 @@ export class GameRunner {
                 this.player.y += (standingHeight - crouchingHeight);
                 this.player.height = crouchingHeight;
                 this.player.state = 'crouch';
+                this.resizePlayerBody(this.player.width, crouchingHeight);
             }
             dx = 0;
         } else {
@@ -1126,6 +1148,7 @@ export class GameRunner {
                 this.player.y -= (standingHeight - crouchingHeight);
                 this.player.height = standingHeight;
                 if (canUpdateMoveState) this.player.state = 'idle';
+                this.resizePlayerBody(this.player.width, standingHeight);
             }
         }
 
@@ -1135,6 +1158,37 @@ export class GameRunner {
         const onSlippery = !!slipperyBehavior;
 
         const wasMovingHorizontal = Math.abs(this.player.velocityX) > 10;
+
+        // Check if player is pressing against a wall
+        let touchingWallLeft = false;
+        let touchingWallRight = false;
+        if (!this.player.isGrounded) {
+            const sideCheckWidth = 2;
+            const sideCheckHeight = this.player.height - 8;
+            const sideCheckYOffset = 4;
+
+            const leftCheck = {
+                x: this.player.x - sideCheckWidth,
+                y: this.player.y + sideCheckYOffset,
+                width: sideCheckWidth,
+                height: sideCheckHeight
+            };
+            const rightCheck = {
+                x: this.player.x + this.player.width,
+                y: this.player.y + sideCheckYOffset,
+                width: sideCheckWidth,
+                height: sideCheckHeight
+            };
+
+            touchingWallLeft = this.physics.checkCollision(leftCheck, tileRects) ||
+                               this.physics.checkCollisionShapes(leftCheck, this.collisionShapes);
+            touchingWallRight = this.physics.checkCollision(rightCheck, tileRects) ||
+                                this.physics.checkCollisionShapes(rightCheck, this.collisionShapes);
+        }
+
+        const pressingAgainstWall = 
+            (dx < 0 && touchingWallLeft) || 
+            (dx > 0 && touchingWallRight);
 
         // Horizontal Movement
         if (this.player.isDashing) {
@@ -1165,7 +1219,13 @@ export class GameRunner {
             }
         } else {
             // Normal movement
-            if (dx !== 0) {
+            if (pressingAgainstWall) {
+                // Keep horizontal velocity near zero to prevent sticking, even if overheated.
+                // This ensures Matter.js doesn't resolve a high-speed collision which causes
+                // vertical velocity to be locked to 0.
+                this.player.velocityX = dx * 0.1;
+                this.player.facingRight = dx > 0;
+            } else if (dx !== 0) {
                 this.player.velocityX = dx * moveSpeed;
                 this.player.facingRight = dx > 0;
                 if (this.player.isGrounded && canUpdateMoveState) this.player.state = 'walk';
@@ -1187,12 +1247,19 @@ export class GameRunner {
         if (this.player.isGrounded) {
             this.player.jumpCount = 0;
             this.player.airAttackCount = 0; // Reset air attacks
+            this.player.rotation = 0; // Reset flip rotation when grounded
             if (this.player.wallJumpCount !== 0) {
                 this.player.wallJumpCount = 0;
                 this.emitStats();
             }
             this.player.isOverheated = false; // Reset overheat on ground
+        } else {
+            // Count falling off a ledge as the first jump spent
+            if (this.player.jumpCount === 0 && !this.player.isOnWall) {
+                this.player.jumpCount = 1;
+            }
         }
+
 
         // --- SLAM VISUALS DURING FALL ---
         if (this.player.isSlamming) {
@@ -1254,6 +1321,7 @@ export class GameRunner {
                 }
 
                 // Screen shake on super jump
+                AudioSystem.play('superJump');
                 this.triggerScreenShake(5);
 
                 // Stretch dramatically
@@ -1267,6 +1335,7 @@ export class GameRunner {
                 this.player.jumpCount = 1;
 
                 // Visuals: Squash + Dust
+                AudioSystem.play('jump');
                 AnimationSystem.add({ id: 'squash', targets: this.player, scaleX: [0.8, 1], scaleY: [1.3, 1], duration: 400, easing: 'easeOutElastic(1, .5)' });
                 this.spawnDust(this.player.x + this.player.width / 2, this.player.y + this.player.height, 5, '#e5e7eb');
             } else if (this.player.isOnWall && (this.player.wallJumpCount || 0) < 4) {
@@ -1282,6 +1351,7 @@ export class GameRunner {
                 this.player.jumpCount = 1; // Count as first jump so they can double jump after
                 this.player.wallJumpCount = (this.player.wallJumpCount || 0) + 1;
                 this.player.wallFriction = 0; // Reset friction on jump
+                AudioSystem.play('wallJump');
                 this.emitStats();
 
                 // Visuals: Wall kick particles
@@ -1307,6 +1377,7 @@ export class GameRunner {
                 this.player.isSlamming = false;
 
                 // Visuals: Flip animation trigger and explosive ring
+                AudioSystem.play('doubleJump');
                 this.player.rotation = this.player.facingRight ? 1 : -1; // init flip rotation in facing direction
                 for (let i = 0; i < 12; i++) {
                     const angle = (i / 12) * Math.PI * 2;
@@ -1421,7 +1492,7 @@ export class GameRunner {
                     const axis = pushBehavior.type === 'transitioning' ? rt.currentAxis : pushBehavior.axis;
 
                     if (axis === 'horizontal') {
-                        let currentSpeed = pushBehavior.speed * rt.movingDirection;
+                        const currentSpeed = pushBehavior.speed * rt.movingDirection;
                         if (currentSpeed > 0 && px < tr.x + tr.width && px + pw / 2 > tr.x + tr.width / 2) {
                             // Moving Right, hit player on right side
                             this.player.x = tr.x + tr.width;
@@ -1461,6 +1532,7 @@ export class GameRunner {
                     if (this.player.isSlamming) {
                         this.player.isSlamming = false;
                         this.player.bounceCancelWindowTimer = 0.15;
+                        AudioSystem.play('landHeavy');
                         this.triggerScreenShake(15);
                         this.spawnDust(this.player.x + this.player.width / 2, this.player.y + this.player.height, 20, '#cbd5e1');
                         this.spawnParticle({
@@ -1470,6 +1542,7 @@ export class GameRunner {
                         });
                         AnimationSystem.add({ id: 'squash', targets: this.player, scaleX: [1.8, 1], scaleY: [0.4, 1], duration: 600, easing: 'easeOutElastic(1, .3)' });
                     } else {
+                        AudioSystem.play('land');
                         this.spawnDust(this.player.x + this.player.width / 2, this.player.y + this.player.height, 6, '#cbd5e1');
                         AnimationSystem.add({ id: 'squash', targets: this.player, scaleX: [1.3, 1], scaleY: [0.8, 1], duration: 400, easing: 'easeOutElastic(1, .5)' });
                     }
@@ -1478,10 +1551,10 @@ export class GameRunner {
                 // Bonk ceiling
                 if (this.player.velocityY < 0 && vel.y > -1) {
                     this.player.velocityY = 0; // Bonk!
+                } else {
+                    // Sync vertical velocity (e.g. following descending platforms)
+                    this.player.velocityY = vel.y * 60;
                 }
-                
-                // Zero out vertical velocity on ground
-                this.player.velocityY = 0;
 
                 // Ground Tile Interactions
                 if (groundTileRect) {
@@ -1493,6 +1566,7 @@ export class GameRunner {
                         this.player.velocityY = -bouncyBehavior.force;
                         this.player.isGrounded = false;
                         this.player.state = 'jump';
+                        AudioSystem.play('bounce');
                         hitRt.bounceCooldownTimer = bouncyBehavior.cooldown;
                     } else if (canUpdateMoveState) {
                         if (dx === 0 && !onSlippery) this.player.state = 'idle';
@@ -1507,21 +1581,23 @@ export class GameRunner {
                     }
                 }
             } else {
-                 if (this.player.velocityY < 0 && vel.y > -1) {
-                     this.player.velocityY = 0; // bonk ceiling
-                 }
+                  if (this.player.velocityY < 0 && vel.y > -1) {
+                      this.player.velocityY = 0; // bonk ceiling
+                  } else {
+                      // Sync vertical velocity in air (resolves ground glitching / wall climb friction lock)
+                      this.player.velocityY = vel.y * 60;
+                  }
             }
 
             // Wall Collision detection for Wall Slide
-            // If requested velocityX is high but actual is near 0, we hit a wall
-            const blockedHorizontal = (Math.abs(this.player.velocityX) > 10 && Math.abs(vel.x * 60) < 5);
-            let hitWall = blockedHorizontal;
+            const hitWall = pressingAgainstWall;
 
             if (hitWall) {
                 this.player.velocityX = 0;
                 
                 if (!this.player.isGrounded && !shouldCrouch && !this.player.isOverheated) {
                     this.player.isOnWall = true;
+                    this.player.rotation = 0; // Reset flip rotation on wall grab
                     this.player.wallDirection = dx !== 0 ? Math.sign(dx) : (this.player.facingRight ? 1 : -1);
                     
                     if ((dx > 0 && this.player.wallDirection === 1) || (dx < 0 && this.player.wallDirection === -1)) {
@@ -1535,6 +1611,7 @@ export class GameRunner {
             } else {
                  this.player.wallSlideTimer = 0;
                  this.player.wallFriction = Math.max(0, (this.player.wallFriction || 0) - 50 * dt);
+                 this.player.isOverheated = false; // Reset overheat when not touching/pressing against a wall!
             }
 
             if (this.player.isOnWall && !this.player.isOverheated) {
@@ -1664,24 +1741,9 @@ export class GameRunner {
             }
         }
 
-        // ─── Multiplayer Sync ───
+        // ─── Multiplayer: extrapolate remote players ───
+        // (the local player_state broadcast is handled once at the top of update())
         if (this.networkManager) {
-            this.syncTimer += dt;
-            if (this.syncTimer > 0.05) { // Sync ~20 times per second
-                this.syncTimer = 0;
-                this.networkManager.broadcast('player_state', {
-                    x: this.player.x,
-                    y: this.player.y,
-                    velocityX: this.player.velocityX,
-                    velocityY: this.player.velocityY,
-                    facingRight: this.player.facingRight,
-                    state: this.player.state,
-                    isGrounded: this.player.isGrounded,
-                    playerIndex: this.player.playerIndex
-                });
-            }
-
-            // Extrapolate remote players
             this.remotePlayers.forEach(rp => {
                 rp.x += rp.velocityX * dt;
                 rp.y += rp.velocityY * dt;
@@ -1736,6 +1798,7 @@ export class GameRunner {
                 const sparks = stunIntensity === 'heavy' ? 12 : (stunIntensity === 'medium' ? 8 : 4);
                 const color = stunIntensity === 'heavy' ? '#b91c1c' : '#ef4444';
                 this.spawnDust(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2, sparks, color);
+                AudioSystem.play(stunIntensity === 'heavy' || isFinalHit ? 'hitHeavy' : 'hit');
 
                 if (isFinalHit || stunIntensity === 'heavy') {
                     this.triggerScreenShake(15);
@@ -1751,6 +1814,7 @@ export class GameRunner {
 
                 if (enemy.hp <= 0) {
                     enemy.dead = true;
+                    AudioSystem.play('enemyDeath');
                     this.player!.exp += enemy.exp;
                     this.emitStats();
                     for (let i = 0; i < 20; i++) {
@@ -1995,6 +2059,7 @@ export class GameRunner {
     private hitPlayer(damage: number) {
         if (!this.player || this.player.state === 'hit' || (this.player.hitStunTimer && this.player.hitStunTimer > 0)) return;
         this.player.hp -= damage; this.spawnDamageText(this.player.x + this.player.width / 2, this.player.y, damage, '#ef4444');
+        AudioSystem.play('playerHit');
         this.player.state = 'hit';
         this.player.animationTimer = 0;
 
@@ -2032,6 +2097,7 @@ export class GameRunner {
     private triggerGameOver() {
         if (this.isGameOver) return;
         this.isGameOver = true;
+        AudioSystem.play('gameOver');
         if (this.onGameOver) {
             this.onGameOver();
         }
@@ -2046,15 +2112,12 @@ export class GameRunner {
     }
 
     private updateTileBehaviors(dt: number) {
-        for (const tile of this.tiles) {
+        // Only behavior tiles need updating — iterate the precomputed dynamicTiles cache
+        // instead of every tile in the level (avoids O(allTiles) work + per-frame array allocs).
+        for (const dtile of this.dynamicTiles) {
+            const tile = dtile.tile;
+            const rt = dtile.rt;
             const behaviors = this.getTileBehaviors(tile);
-            if (behaviors.length === 0) continue;
-
-            let rt = this.tileRuntime.get(tile.id);
-            if (!rt) {
-                rt = createDefaultRuntimeState(tile);
-                this.tileRuntime.set(tile.id, rt);
-            }
 
             for (const behavior of behaviors) {
                 const prevOffset = rt.movingOffset;
@@ -2072,7 +2135,7 @@ export class GameRunner {
 
                         rt.movingOffset += speed * rt.movingDirection * dt;
 
-                        let initDir = behavior.initialDirection ?? 1;
+                        const initDir = behavior.initialDirection ?? 1;
                         if (behavior.pingPong) {
                             if (initDir === 1) {
                                 if (rt.movingOffset >= maxOffset) {
@@ -2120,7 +2183,7 @@ export class GameRunner {
 
                         rt.movingOffset += behavior.speed * rt.movingDirection * dt;
 
-                        let initDir = behavior.initialDirection ?? 1;
+                        const initDir = behavior.initialDirection ?? 1;
                         if (behavior.pingPong) {
                             if (initDir === 1) {
                                 if (rt.movingOffset >= maxOffset) {
@@ -2179,14 +2242,21 @@ export class GameRunner {
                     }
 
                     case 'floating': {
+                        // Continuous idle bob (independent of the player) — this is the
+                        // "floats up and down" motion. The same offset is applied to the sprite
+                        // AND the collision body below, so they stay aligned.
+                        const bobAmount = behavior.bobAmount ?? 6;
+                        const bobSpeed = behavior.bobSpeed ?? 0.6;
+                        rt.bobTime += dt;
+                        rt.bobOffset = Math.sin(rt.bobTime * bobSpeed * Math.PI * 2) * bobAmount;
+
                         if (rt.playerOnTile) {
-                            // Sink
+                            // Sink under the player's weight (on top of the bob)
                             rt.sinkOffset = Math.min(rt.sinkOffset + behavior.sinkSpeed * dt, behavior.maxSink);
-                            // Tilt based on player relative position (simple oscillation)
                             const targetTilt = behavior.tiltAmount * Math.sin(performance.now() / 400);
                             rt.tiltAngle += (targetTilt - rt.tiltAngle) * 0.1;
                         } else {
-                            // Recover
+                            // Recover toward rest
                             rt.sinkOffset = Math.max(rt.sinkOffset - behavior.recoverSpeed * dt, 0);
                             rt.tiltAngle *= 0.92; // Dampen tilt
                         }

@@ -14,8 +14,10 @@ function createWindow() {
         height: 720,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
-            nodeIntegration: true,
-            contextIsolation: false // Temporary for easy local filesystem access if ever needed.
+            // Secure defaults: the renderer reaches Node/IPC only through the contextBridge
+            // API exposed in preload.js (window.electronAPI), never via window.require.
+            contextIsolation: true,
+            nodeIntegration: false,
         },
     });
 
@@ -25,8 +27,8 @@ function createWindow() {
     } else {
         // In production, we load the index.html created by Vite
         win.loadFile(path.join(__dirname, '../dist/index.html'));
-        win.webContents.openDevTools({ mode: 'detach' });
 
+        // Forward renderer console to the main-process log (no DevTools window in prod builds).
         win.webContents.on('console-message', (event, level, message, line, sourceId) => {
             console.log(`[Renderer Console] ${message}`);
         });
@@ -36,6 +38,37 @@ function createWindow() {
 app.whenReady().then(() => {
     ipcMain.on('is-packaged', (event) => {
         event.returnValue = app.isPackaged;
+    });
+
+    // Sync path lookups used by DatabaseService (sql.js file persistence + wasm locateFile).
+    // Without these, the packaged app's file-based DB path fails and silently falls back to IndexedDB.
+    ipcMain.on('get-user-data-path', (event) => {
+        event.returnValue = app.getPath('userData');
+    });
+
+    ipcMain.on('get-app-path', (event) => {
+        event.returnValue = app.getAppPath();
+    });
+
+    // sql.js database file read/write (used by DatabaseService when running in Electron).
+    const dbFilePath = () => path.join(app.getPath('userData'), 'azri_engine_db.sqlite');
+    ipcMain.handle('read-db-file', async () => {
+        try {
+            const file = dbFilePath();
+            if (fs.existsSync(file)) return fs.readFileSync(file);
+        } catch (e) {
+            console.error('read-db-file failed:', e);
+        }
+        return null;
+    });
+    ipcMain.handle('write-db-file', async (event, data) => {
+        try {
+            fs.writeFileSync(dbFilePath(), Buffer.from(data));
+            return true;
+        } catch (e) {
+            console.error('write-db-file failed:', e);
+            return false;
+        }
     });
 
     const getMapsDir = () => {

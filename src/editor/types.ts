@@ -70,6 +70,8 @@ export interface FloatingBehavior {
     sinkSpeed: number;     // How fast it sinks under player (px/s)
     recoverSpeed: number;  // How fast it recovers (px/s)
     maxSink: number;       // Max sink distance in pixels
+    bobAmount?: number;    // Idle bob height in pixels (0 = no bob). Optional for back-compat.
+    bobSpeed?: number;     // Idle bob cycles per second (Hz)
 }
 
 export interface DeadBehavior {
@@ -112,7 +114,7 @@ export type TileBehavior = MovingBehavior | FloatingBehavior | DeadBehavior | Bo
 
 export const DEFAULT_BEHAVIORS: Record<TileBehaviorType, TileBehavior> = {
     moving: { type: 'moving', axis: 'horizontal', distance: 3, speed: 80, pingPong: true, initialDirection: 1, speedUpOnPlayer: false, slowDownOnPlayer: false, speedMultiplier: 1.5 },
-    floating: { type: 'floating', tiltAmount: 8, sinkSpeed: 40, recoverSpeed: 60, maxSink: 12 },
+    floating: { type: 'floating', tiltAmount: 8, sinkSpeed: 40, recoverSpeed: 60, maxSink: 12, bobAmount: 6, bobSpeed: 0.6 },
     dead: { type: 'dead', delay: 0.8, fallSpeed: 600, shake: true },
     bouncy: { type: 'bouncy', force: 650, cooldown: 0.1 },
     slippery: { type: 'slippery', friction: 0.05, acceleration: 80 },

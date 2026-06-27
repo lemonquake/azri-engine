@@ -4,6 +4,7 @@ import type { Tile, SkyboxLayer, LevelImage } from '../../editor/types';
 import { TileSpriteCache } from '../../editor/components/tiles/TileSpriteCache';
 import { DefaultCharacter } from '../../editor/game/DefaultCharacter';
 import { EnemyRenderer } from '../../editor/game/EnemyRenderer';
+import { entitySignature } from './entitySignature';
 
 export class PixiRenderer {
     public app: PIXI.Application;
@@ -32,7 +33,12 @@ export class PixiRenderer {
     // Sprite Caches mapped by Entity/Tile IDs
     private spriteCache = new Map<string, PIXI.Sprite | PIXI.Graphics | PIXI.Text | PIXI.TilingSprite>();
     private pixiTextureCache = new Map<OffscreenCanvas, PIXI.Texture>();
-    private entityCanvasCache = new Map<string, { canvas: OffscreenCanvas, texture: PIXI.Texture, ctx: OffscreenCanvasRenderingContext2D }>();
+    private entityCanvasCache = new Map<string, { canvas: OffscreenCanvas, texture: PIXI.Texture, ctx: OffscreenCanvasRenderingContext2D, lastSig?: string }>();
+
+    // Pooled particle display objects — reused across frames instead of being allocated
+    // and destroyed every frame (which caused heavy GC churn + a spriteCache leak).
+    private particleGfxPool: PIXI.Graphics[] = [];
+    private particleTextPool: PIXI.Text[] = [];
 
     private getPixiTextureForCanvas(canvas: OffscreenCanvas | null): PIXI.Texture | null {
         if (!canvas) return null;
@@ -160,7 +166,8 @@ export class PixiRenderer {
         levelImages: any[],
         collisionShapes: import('../../editor/types').CollisionShape[],
         time: number = 0,
-        tileDefs?: Map<string, import('../../editor/types').TileDefinition>
+        tileDefs?: Map<string, import('../../editor/types').TileDefinition>,
+        waterOccupied?: Set<string>
     ) {
         if (!this.isInitialized) return;
 
@@ -171,7 +178,7 @@ export class PixiRenderer {
         this.syncSkybox(skyboxLayers, camera, time);
         
         // Sync Tiles
-        this.syncTiles(tiles, tileRuntime, time, tileDefs);
+        this.syncTiles(tiles, tileRuntime, time, tileDefs, camera, waterOccupied);
         
         // Sync Level Images (Props)
         this.syncLevelImages(levelImages);
@@ -303,19 +310,40 @@ export class PixiRenderer {
         this.cleanupCache(this.objectContainer, currentIds, 'prop_');
     }
 
-    private syncTiles(tiles: Tile[], tileRuntime: Map<string, any>, time: number, tileDefs?: Map<string, import('../../editor/types').TileDefinition>) {
+    private syncTiles(tiles: Tile[], tileRuntime: Map<string, any>, time: number, tileDefs?: Map<string, import('../../editor/types').TileDefinition>, camera?: { x: number, y: number }, waterOccupied?: Set<string>) {
         const currentIds = new Set<string>();
+
+        const screenW = this.app.screen.width || 800;
+        const screenH = this.app.screen.height || 600;
+        const cullMargin = 64;
 
         for (const tile of tiles) {
             const id = 'tile_' + tile.id;
             currentIds.add(id);
-            
+
             let sprite: any = this.spriteCache.get(id);
             if (!sprite) {
                 sprite = new PIXI.Sprite(PIXI.Texture.WHITE);
                 this.tileContainer.addChild(sprite);
                 this.spriteCache.set(id, sprite);
             }
+
+            // View-frustum culling: hide and skip the expensive per-tile work for tiles outside
+            // the camera viewport. Behavior tiles (which move) are never culled, so a moving
+            // platform can't pop out at the screen edge.
+            const hasBehavior = !!(tile.behavior || tile.behavior2);
+            if (camera && !hasBehavior) {
+                const cwx = tile.gridX * 32;
+                const cwy = tile.gridY * 32;
+                const csx = 32 * Math.abs(tile.scaleX || 1);
+                const csy = 32 * Math.abs(tile.scaleY || 1);
+                if (cwx + csx < camera.x - cullMargin || cwx > camera.x + screenW + cullMargin ||
+                    cwy + csy < camera.y - cullMargin || cwy > camera.y + screenH + cullMargin) {
+                    sprite.visible = false;
+                    continue;
+                }
+            }
+            sprite.visible = true;
 
             sprite.x = tile.gridX * 32;
             sprite.y = tile.gridY * 32;
@@ -360,7 +388,11 @@ export class PixiRenderer {
                 
                 // Fetch dynamic animation frame from TileSpriteCache
                 const rt = tileRuntime.get(tile.id);
-                const isWaterSurface = tile.spriteId === 'water' && (!tiles.some(t => t.gridX === tile.gridX && t.gridY === tile.gridY - 1 && t.spriteId === 'water'));
+                const isWaterSurface = tile.spriteId === 'water' && (
+                    waterOccupied
+                        ? !waterOccupied.has(`${tile.layerId}:${tile.gridX},${tile.gridY - 1}`)
+                        : !tiles.some(t => t.gridX === tile.gridX && t.gridY === tile.gridY - 1 && t.spriteId === 'water')
+                );
                 const isGrassRustling = tile.spriteId === 'grass' && rt && Math.random() < 0.05; // Quick approximate for rustling if rustle state missing
                 
                 let cacheKey = tile.spriteId;
@@ -423,7 +455,7 @@ export class PixiRenderer {
                     this.filterCache.set(id, filter);
                 }
                 
-                let glowHex = tile.glowColor || tile.glow?.color || '#ffffff';
+                const glowHex = tile.glowColor || tile.glow?.color || '#ffffff';
                 let intensity = tile.glow?.intensity ?? 15;
                 if (tile.glow) {
                    const speed = tile.glow.speed || 1;
@@ -452,6 +484,7 @@ export class PixiRenderer {
                 if (rt.chaosOffsetX) sprite.x += rt.chaosOffsetX;
                 if (rt.chaosOffsetY) sprite.y += rt.chaosOffsetY;
                 if (rt.sinkOffset) sprite.y += rt.sinkOffset;
+                if (rt.bobOffset) sprite.y += rt.bobOffset;
                 if (rt.fallOffset) {
                     sprite.y += rt.fallOffset;
                     sprite.alpha = Math.max(0, sprite.alpha - rt.fallOffset / 500);
@@ -463,12 +496,10 @@ export class PixiRenderer {
         this.cleanupCache(this.tileContainer, currentIds, 'tile_');
     }
 
-    private getEntitySprite(id: string): { sprite: PIXI.Sprite, ctx: OffscreenCanvasRenderingContext2D, texture: PIXI.Texture } {
+    private getEntitySprite(id: string) {
         let cache = this.entityCanvasCache.get(id);
         if (!cache) {
-            const canvasWidth = 120; // ample room for weapons/effects
-            const canvasHeight = 120;
-            const canvas = new OffscreenCanvas(canvasWidth, canvasHeight);
+            const canvas = new OffscreenCanvas(120, 120); // ample room for weapons/effects
             const ctx = canvas.getContext('2d') as OffscreenCanvasRenderingContext2D;
             ctx.imageSmoothingEnabled = false; // pixel art style
             const texture = PIXI.Texture.from(canvas);
@@ -480,37 +511,40 @@ export class PixiRenderer {
             this.entityContainer.addChild(sprite);
             this.spriteCache.set(id, sprite);
         }
-
         const sprite = this.spriteCache.get(id) as PIXI.Sprite;
-        return { sprite, ctx: cache.ctx, texture: cache.texture };
+        return { sprite, cache };
+    }
+
+    // Render an entity into its cached texture, but only when its visual signature changed.
+    private renderEntityCached(id: string, entity: any, draw: (ctx: OffscreenCanvasRenderingContext2D, mock: any) => void): PIXI.Sprite {
+        const { sprite, cache } = this.getEntitySprite(id);
+        const sig = entitySignature(entity);
+        if (sig !== cache.lastSig) {
+            cache.ctx.clearRect(0, 0, 120, 120);
+            const mock = {
+                ...entity,
+                x: 60 - (entity.width || 20) / 2,
+                y: 60 - (entity.height || 28) / 2,
+                rotation: 0, scaleX: 1, scaleY: 1,
+            };
+            draw(cache.ctx, mock);
+            cache.texture.source.update(); // re-upload to the GPU only when the pose changed
+            cache.lastSig = sig;
+        }
+        return sprite;
     }
 
     private syncEntities(player: any, remotePlayers: any[], enemies: any[]) {
         const currentIds = new Set<string>();
 
-        // Player
+        // Player — pose texture is reused across frames unless its signature changes.
         if (player) {
             const id = 'player_main';
             currentIds.add(id);
-            const { sprite, ctx, texture } = this.getEntitySprite(id);
-            
-            ctx.clearRect(0, 0, 120, 120);
-            
-            // Render to OffscreenCanvas
-            // We pass an adjusted object to DefaultCharacter so it draws in the center of our 120x120 canvas
-            const mockPlayerForRender = {
-                ...player,
-                x: 60 - (player.width || 20) / 2,
-                y: 60 - (player.height || 28) / 2,
-                rotation: 0, // Pixi will handle final rotation
-                scaleX: 1,
-                scaleY: 1
-            };
-            DefaultCharacter.render(ctx as any, mockPlayerForRender);
-            texture.source.update(); // Push to GPU
-            
+            const sprite = this.renderEntityCached(id, player, (ctx, mock) => DefaultCharacter.render(ctx as any, mock));
+
             sprite.position.set(player.x + (player.width || 20) / 2, player.y + (player.height || 28) / 2);
-            if (player.rotation !== undefined) sprite.rotation = player.rotation * Math.PI / 180;
+            sprite.rotation = player.rotation !== undefined ? player.rotation * Math.PI / 180 : 0;
             if (player.scaleX !== undefined) sprite.scale.x = player.scaleX;
             if (player.scaleY !== undefined) sprite.scale.y = player.scaleY;
         }
@@ -519,18 +553,7 @@ export class PixiRenderer {
         remotePlayers.forEach((rp, i) => {
             const id = 'rp_' + i;
             currentIds.add(id);
-            const { sprite, ctx, texture } = this.getEntitySprite(id);
-            
-            ctx.clearRect(0, 0, 120, 120);
-            const mockPlayerForRender = {
-                ...rp,
-                x: 60 - (rp.width || 20) / 2,
-                y: 60 - (rp.height || 28) / 2,
-                rotation: 0, scaleX: 1, scaleY: 1
-            };
-            DefaultCharacter.render(ctx as any, mockPlayerForRender);
-            texture.source.update();
-            
+            const sprite = this.renderEntityCached(id, rp, (ctx, mock) => DefaultCharacter.render(ctx as any, mock));
             sprite.position.set(rp.x + (rp.width || 20) / 2, rp.y + (rp.height || 28) / 2);
         });
 
@@ -539,18 +562,7 @@ export class PixiRenderer {
             if (enemy.dead) return;
             const id = 'enemy_' + i;
             currentIds.add(id);
-            const { sprite, ctx, texture } = this.getEntitySprite(id);
-            
-            ctx.clearRect(0, 0, 120, 120);
-            const mockEnemyForRender = {
-                ...enemy,
-                x: 60 - (enemy.width || 20) / 2,
-                y: 60 - (enemy.height || 28) / 2,
-                rotation: 0, scaleX: 1, scaleY: 1
-            };
-            EnemyRenderer.render(ctx as any, mockEnemyForRender);
-            texture.source.update();
-            
+            const sprite = this.renderEntityCached(id, enemy, (ctx, mock) => EnemyRenderer.render(ctx as any, mock));
             sprite.position.set(enemy.x + (enemy.width || 20) / 2, enemy.y + (enemy.height || 28) / 2);
         });
 
@@ -588,40 +600,59 @@ export class PixiRenderer {
     }
 
     private syncParticles(particles: any[]) {
-        // Fast particle render
-        this.particleContainer.removeChildren(); // Immediate mode clearing 
-        // Actual robust implementation will pool sprites
-        particles.forEach((p) => {
+        // Pooled render: reuse Graphics/Text objects across frames rather than allocating
+        // and destroying one per particle every frame. Unused pooled objects are hidden.
+        let gfxIndex = 0;
+        let textIndex = 0;
+
+        for (const p of particles) {
             const size = p.shrink ? p.size * (p.life / p.maxLife) : p.size;
-            
+            const alpha = Math.max(0, p.life / p.maxLife);
+
             if (p.shape === 'text' && p.text) {
-                let txt = this.spriteCache.get('part_txt_' + p.id) as PIXI.Text;
+                let txt = this.particleTextPool[textIndex];
                 if (!txt) {
-                    txt = new PIXI.Text({ 
-                        text: p.text, 
-                        style: { fontFamily: 'monospace', fontSize: size, fill: p.color, fontWeight: 'bold', stroke: { color: 0x000000, width: 4 } } 
+                    txt = new PIXI.Text({
+                        text: p.text,
+                        style: { fontFamily: 'monospace', fontSize: 16, fill: 0xffffff, fontWeight: 'bold', stroke: { color: 0x000000, width: 4 } }
                     });
                     txt.anchor.set(0.5, 0.5);
-                    this.spriteCache.set('part_txt_' + p.id, txt);
+                    this.particleContainer.addChild(txt);
+                    this.particleTextPool[textIndex] = txt;
                 }
+                txt.visible = true;
+                txt.text = p.text;
+                txt.style.fontSize = size;
+                txt.style.fill = p.color;
                 txt.position.set(p.x, p.y);
-                txt.alpha = Math.max(0, p.life / p.maxLife);
-                this.particleContainer.addChild(txt);
-                return;
+                txt.alpha = alpha;
+                textIndex++;
+                continue;
             }
 
-            const gfx = new PIXI.Graphics();
+            let gfx = this.particleGfxPool[gfxIndex];
+            if (!gfx) {
+                gfx = new PIXI.Graphics();
+                this.particleContainer.addChild(gfx);
+                this.particleGfxPool[gfxIndex] = gfx;
+            }
+            gfx.visible = true;
+            gfx.clear();
             if (p.shape === 'circle' || p.shape === 'ring') {
-                if (p.shape === 'ring') gfx.circle(0,0, size).stroke({ color: p.color, width: 2 });
-                else gfx.circle(0,0, size).fill({ color: p.color });
-            } else { // square limit
-                gfx.rect(-size/2, -size/2, size, size).fill({ color: p.color });
+                if (p.shape === 'ring') gfx.circle(0, 0, size).stroke({ color: p.color, width: 2 });
+                else gfx.circle(0, 0, size).fill({ color: p.color });
+            } else { // square / slash fallback
+                gfx.rect(-size / 2, -size / 2, size, size).fill({ color: p.color });
             }
             gfx.position.set(p.x, p.y);
-            if (p.rotation !== undefined) gfx.rotation = p.rotation * Math.PI / 180;
-            gfx.alpha = Math.max(0, p.life / p.maxLife);
-            this.particleContainer.addChild(gfx);
-        });
+            gfx.rotation = p.rotation !== undefined ? p.rotation * Math.PI / 180 : 0;
+            gfx.alpha = alpha;
+            gfxIndex++;
+        }
+
+        // Hide any pooled objects not used this frame (keeps them ready for reuse)
+        for (let i = gfxIndex; i < this.particleGfxPool.length; i++) this.particleGfxPool[i].visible = false;
+        for (let i = textIndex; i < this.particleTextPool.length; i++) this.particleTextPool[i].visible = false;
     }
 
     private syncCollisions(collisionShapes: import('../../editor/types').CollisionShape[], tiles: Tile[], tileRuntime: Map<string, any>) {
@@ -711,6 +742,7 @@ export class PixiRenderer {
                 if (rt.chaosOffsetX) wx += rt.chaosOffsetX;
                 if (rt.chaosOffsetY) wy += rt.chaosOffsetY;
                 if (rt.sinkOffset) wy += rt.sinkOffset;
+                if (rt.bobOffset) wy += rt.bobOffset;
                 if (rt.fallOffset) wy += rt.fallOffset;
             }
 
